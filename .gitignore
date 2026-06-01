@@ -1,0 +1,68 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# data (SQLite files; keep .gitkeep to preserve dir)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
+
+# test
+coverage/
+*.test.db
+*.test.db-shm
+*.test.db-wal
+data/test-*.db
+data/test-*.db-shm
+data/test-*.db-wal
+
+# worktrees / IDE / Claude / 工具
+.worktrees/
+.claude/
+.codefree/
+.harness/
+.vscode/
+.idea/
+
+# 文档与截图（不入库）
+docs/
+
+# env
+.env*.local
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 缓存 / 临时
+.cache/
+.tmp/
+tmp/
+*.tgz
+*.zip
+*.tar.gz
+
+# 编辑器/系统临时
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
+*.pem
+
+# trash tmp
+.trash-tmp/
