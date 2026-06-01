@@ -6,6 +6,8 @@
     "dev": "tsx server.ts",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
+    "db:reset": "tsx scripts/reset-db.ts",
+    "db:seed:demos": "tsx scripts/seed-demos.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",

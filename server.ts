@@ -1,5 +1,6 @@
 // Custom Next.js server: 同时启动 Next.js + Socket.IO
 import { createServer } from "node:http";
+import os from "node:os";
 import next from "next";
 import { Server as SocketIOServer } from "socket.io";
 import { setIO } from "./src/lib/socket";
@@ -9,6 +10,18 @@ import { seedUsers, ensureDemoTasks } from "./src/lib/db/seed";
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 3000);
+
+/** 探测本机第一个非 internal 的 IPv4 地址 */
+function getLanIp(): string | null {
+  const ifaces = os.networkInterfaces();
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const i of list) {
+      if (i.family === "IPv4" && !i.internal) return i.address;
+    }
+  }
+  return null;
+}
 
 async function bootstrap() {
   // 1) 跑建表（启动时自动 migration）
@@ -44,10 +57,16 @@ async function bootstrap() {
   setIO(io);
 
   httpServer.listen(port, hostname, () => {
-    const display = hostname === "0.0.0.0" ? "localhost" : hostname;
+    const lanIp = hostname === "0.0.0.0" ? getLanIp() : null;
+    const localLabel = hostname === "0.0.0.0" ? "localhost" : hostname;
     console.log(`\n  ▲ Kanban ready`);
-    console.log(`  - Local:   http://${display}:${port}`);
-    console.log(`  - Network: http://<your-LAN-IP>:${port}\n`);
+    console.log(`  - Local:   http://${localLabel}:${port}`);
+    if (lanIp) {
+      console.log(`  - Network: http://${lanIp}:${port}  (队友用这个 IP 连进来)`);
+    } else {
+      console.log(`  - Network: <未检测到 LAN IP，配 HOST 环境变量手动指定>`);
+    }
+    console.log("");
   });
 }
 
