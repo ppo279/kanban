@@ -11,7 +11,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { Plus, LogOut } from "lucide-react";
+import { Plus, LogOut, PanelRightOpen } from "lucide-react";
 import { toast } from "sonner";
 import { Column } from "./Column";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -24,6 +24,7 @@ import { useSocket } from "@/hooks/useSocket";
 import { between } from "@/lib/fractional";
 import { STATUSES, ROLE_COLOR, ROLE_LABEL, type Task, type Status } from "@/types";
 import { useRouter } from "next/navigation";
+import { DocSidebar } from "@/components/docs/DocSidebar";
 
 export function Board() {
   const router = useRouter();
@@ -40,6 +41,7 @@ export function Board() {
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const byStatus = useMemo(() => selectByStatus({ tasks } as any), [tasks]);
@@ -132,6 +134,13 @@ export function Board() {
           <span className="text-xs text-muted-foreground">实时协作</span>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            variant={sidebarOpen ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            <PanelRightOpen className="mr-1 h-4 w-4" /> 文档
+          </Button>
           <Button onClick={() => setNewOpen(true)} size="sm">
             <Plus className="mr-1 h-4 w-4" /> 新建任务
           </Button>
@@ -150,41 +159,47 @@ export function Board() {
         </div>
       </header>
 
-      {/* 看板 */}
-      <main className="flex-1 overflow-x-auto bg-slate-50 p-4">
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={(e: DragStartEvent) => setActiveId(String(e.active.id))}
-          onDragEnd={onDragEnd}
-          onDragCancel={() => setActiveId(null)}
-        >
-          <div className="flex gap-3">
-            {STATUSES.map((s) => (
-              <Column
-                key={s}
-                status={s}
-                tasks={byStatus[s]}
-                users={users}
-                onCardClick={(t) => {
-                  setDetailTask(t);
-                  setDetailOpen(true);
-                }}
-              />
-            ))}
-          </div>
-          <DragOverlay>
-            {activeTask ? (
-              <div className="rotate-1 opacity-90">
-                <TaskCard
-                  task={activeTask}
-                  assignee={users.find((u) => u.id === activeTask.assigneeId)}
+      {/* 看板 + 侧边栏 */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* 看板 */}
+        <main className="flex-1 overflow-x-auto bg-slate-50 p-4">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={(e: DragStartEvent) => setActiveId(String(e.active.id))}
+            onDragEnd={onDragEnd}
+            onDragCancel={() => setActiveId(null)}
+          >
+            <div className="flex gap-3">
+              {STATUSES.map((s) => (
+                <Column
+                  key={s}
+                  status={s}
+                  tasks={byStatus[s]}
+                  users={users}
+                  onCardClick={(t) => {
+                    setDetailTask(t);
+                    setDetailOpen(true);
+                  }}
                 />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
-      </main>
+              ))}
+            </div>
+            <DragOverlay>
+              {activeTask ? (
+                <div className="rotate-1 opacity-90">
+                  <TaskCard
+                    task={activeTask}
+                    assignee={users.find((u) => u.id === activeTask.assigneeId)}
+                  />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        </main>
+
+        {/* 文档侧边栏 */}
+        <DocSidebar open={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
+      </div>
 
       <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
       <TaskDetailDialog task={detailTask} open={detailOpen} onOpenChange={setDetailOpen} />

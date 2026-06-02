@@ -27,6 +27,7 @@ export async function runMigrations() {
       description TEXT,
       status TEXT NOT NULL DEFAULT 'todo',
       priority TEXT NOT NULL DEFAULT 'med',
+      type TEXT NOT NULL DEFAULT 'feature',
       assignee_id TEXT NOT NULL REFERENCES users(id),
       created_by_id TEXT NOT NULL REFERENCES users(id),
       position REAL NOT NULL,
@@ -45,7 +46,51 @@ export async function runMigrations() {
 
     CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS api_modules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE TABLE IF NOT EXISTS api_interfaces (
+      id TEXT PRIMARY KEY,
+      module_id TEXT NOT NULL REFERENCES api_modules(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'GET',
+      path TEXT NOT NULL,
+      description TEXT,
+      request_schema TEXT,
+      response_schema TEXT,
+      mock_response TEXT,
+      mock_status_code INTEGER NOT NULL DEFAULT 200,
+      mock_headers TEXT,
+      swagger_url TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT,
+      created_by_id TEXT NOT NULL REFERENCES users(id),
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
   `);
+
+  // 迁移：给 tasks 表添加 type 列（如果不存在）
+  try {
+    sqlite.exec(`ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'feature'`);
+  } catch {
+    // 列已存在，忽略
+  }
 
   sqlite.close();
   console.log("[migrate] schema ready at", dbPath);

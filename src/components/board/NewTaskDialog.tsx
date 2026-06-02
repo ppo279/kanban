@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -15,7 +15,14 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useBoardStore } from "@/store/board";
-import { PRIORITIES, PRIORITY_LABEL, type Priority } from "@/types";
+import {
+  PRIORITIES,
+  PRIORITY_LABEL,
+  TASK_TYPES,
+  TASK_TYPE_LABEL,
+  type Priority,
+  type TaskType,
+} from "@/types";
 
 interface Props {
   open: boolean;
@@ -30,7 +37,15 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Priority>("med");
+  const [type, setType] = useState<TaskType>("feature");
   const [assigneeId, setAssigneeId] = useState(me?.id ?? "");
+
+  useEffect(() => {
+    if (me && !assigneeId) {
+      setAssigneeId(me.id);
+    }
+  }, [me, assigneeId]);
+
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -49,6 +64,7 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
           title: title.trim(),
           description: description.trim() || null,
           priority,
+          type,
           assigneeId,
         }),
       });
@@ -63,6 +79,7 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       setTitle("");
       setDescription("");
       setPriority("med");
+      setType("feature");
     } catch (err) {
       toast.error("网络错误");
     } finally {
@@ -100,6 +117,25 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
               placeholder="可选，任务详情"
               rows={3}
             />
+          </div>
+          <div className="space-y-2">
+            <Label>任务类型</Label>
+            <div className="flex gap-1">
+              {TASK_TYPES.map((t) => (
+                <button
+                  type="button"
+                  key={t}
+                  onClick={() => setType(t)}
+                  className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                    type === t
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border hover:border-primary/50"
+                  }`}
+                >
+                  {TASK_TYPE_LABEL[t]}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">

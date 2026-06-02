@@ -3,7 +3,7 @@
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { Avatar } from "@/components/ui/avatar";
-import { PRIORITY_BAR, ROLE_COLOR, PRIORITY_LABEL } from "@/types";
+import { PRIORITY_BAR, ROLE_COLOR, PRIORITY_LABEL, TASK_TYPE_LABEL, TASK_TYPE_COLOR } from "@/types";
 import type { Task, User } from "@/types";
 import { cn } from "@/lib/util";
 
@@ -42,6 +42,16 @@ export function TaskCard({ task, assignee, onClick }: Props) {
       />
 
       <div className="flex-1 min-w-0 pl-2">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span
+            className={cn(
+              "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium text-white",
+              TASK_TYPE_COLOR[task.type ?? "feature"]
+            )}
+          >
+            {TASK_TYPE_LABEL[task.type ?? "feature"]}
+          </span>
+        </div>
         <div className="text-sm font-medium leading-snug line-clamp-2 break-words">
           {task.title}
         </div>

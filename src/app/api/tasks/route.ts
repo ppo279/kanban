@@ -22,6 +22,7 @@ const CreateBody = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(5000).nullable().optional(),
   priority: z.enum(["low", "med", "high"]).default("med"),
+  type: z.enum(["feature", "bug", "mock-api", "doc"]).default("feature"),
   assigneeId: z.string().min(1),
   status: z.enum(["todo", "doing", "review", "done"]).default("todo"),
 });
@@ -44,7 +45,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 简化：直接信任 assigneeId（前端从 /api/users 下拉选，不传陌生 id）
+  // Fall back to current user if assigneeId is empty
+  const assigneeId = parsed.data.assigneeId || user.id;
 
   const id = nanoid(12);
   const now = Date.now();
@@ -54,7 +56,8 @@ export async function POST(req: NextRequest) {
     description: parsed.data.description ?? null,
     status: parsed.data.status,
     priority: parsed.data.priority,
-    assigneeId: parsed.data.assigneeId,
+    type: parsed.data.type,
+    assigneeId,
     createdById: user.id,
     position: newPosition(),
     createdAt: new Date(now),

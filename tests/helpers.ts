@@ -13,6 +13,7 @@ export function makeReq(
   if (cookie) headers["cookie"] = cookie;
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = typeof body === "string" ? body : JSON.stringify(body);
+  return new NextRequest(url, init as any);
   return new NextRequest(url, init);
 }
 

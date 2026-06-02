@@ -38,10 +38,7 @@ export async function PATCH(
   if (existing.length === 0) {
     return NextResponse.json({ ok: false, error: "任务不存在" }, { status: 404 });
   }
-  const t = existing[0];
-  if (t.createdById !== user.id && t.assigneeId !== user.id) {
-    return NextResponse.json({ ok: false, error: "无权移动此任务" }, { status: 403 });
-  }
+  // Any authenticated user on the board can move tasks
 
   await db
     .update(schema.tasks)
