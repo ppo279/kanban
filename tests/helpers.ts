@@ -14,7 +14,6 @@ export function makeReq(
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = typeof body === "string" ? body : JSON.stringify(body);
   return new NextRequest(url, init as any);
-  return new NextRequest(url, init);
 }
 
 /** 登录并把 sid 写进全局 cookie store */

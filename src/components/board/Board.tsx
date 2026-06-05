@@ -42,6 +42,7 @@ export function Board() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const byStatus = useMemo(() => selectByStatus({ tasks } as any), [tasks]);
@@ -177,10 +178,12 @@ export function Board() {
                   status={s}
                   tasks={byStatus[s]}
                   users={users}
-                  onCardClick={(t) => {
-                    setDetailTask(t);
-                    setDetailOpen(true);
-                  }}
+                    onCardClick={(t) => {
+                      setDetailTask(t);
+                      setDetailOpen(true);
+                      setSelectedTaskId(t.id);
+                      if (!sidebarOpen) setSidebarOpen(true);
+                    }}
                 />
               ))}
             </div>
@@ -198,7 +201,11 @@ export function Board() {
         </main>
 
         {/* 文档侧边栏 */}
-        <DocSidebar open={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
+        <DocSidebar
+          open={sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+          selectedTaskId={selectedTaskId}
+        />
       </div>
 
       <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />

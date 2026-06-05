@@ -40,3 +40,41 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* ── Tiptap Placeholder ── */
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: #adb5bd;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* ── Tiptap collaboration cursors ── */
+.ProseMirror-yjs-selection {
+  position: relative;
+}
+
+.ProseMirror-yjs-cursor {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid;
+  border-color: orange;
+  word-break: normal;
+  pointer-events: none;
+}
+
+.ProseMirror-yjs-cursor > div {
+  position: absolute;
+  top: -1.2em;
+  left: -2px;
+  font-size: 12px;
+  line-height: normal;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  font-weight: 600;
+  pointer-events: none;
+}

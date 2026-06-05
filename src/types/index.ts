@@ -40,6 +40,15 @@ export interface ApiModule {
   updatedAt: number;
 }
 
+export interface MockField {
+  key: string;        // Field name (English)
+  label: string;      // Chinese name
+  type: "string" | "number" | "boolean" | "array" | "object";
+  mock: string;       // Mock rule, e.g. @name, @integer(1,100)
+  desc: string;       // Description
+  required: boolean;  // Whether field is required
+}
+
 export interface ApiInterface {
   id: string;
   moduleId: string;
@@ -51,6 +60,10 @@ export interface ApiInterface {
   requestSchema: string | null;
   responseSchema: string | null;
   mockResponse: string | null;
+  requestFields: string | MockField[] | null;
+  mockFields: string | MockField[] | null;
+  responseMode: ResponseMode;
+  customWrapper: string | ResponseWrapper | null;
   mockStatusCode: number;
   mockHeaders: string | null;
   swaggerUrl: string | null;
@@ -132,4 +145,70 @@ export const INTERFACE_STATUS_LABEL: Record<InterfaceStatus, string> = {
   draft: "草稿",
   active: "活跃",
   deprecated: "已废弃",
+};
+
+export const MOCK_FIELD_TYPES = ["string", "number", "boolean", "array", "object"] as const;
+
+export type MockFieldType = (typeof MOCK_FIELD_TYPES)[number];
+
+/** Response wrapper configuration */
+export interface ResponseWrapper {
+  enabled: boolean;
+  codeField: string;
+  messageField: string;
+  dataField: string;
+  successCode: number;
+}
+
+/** Default response wrapper */
+export const DEFAULT_RESPONSE_WRAPPER: ResponseWrapper = {
+  enabled: true,
+  codeField: "code",
+  messageField: "message",
+  dataField: "data",
+  successCode: 200,
+};
+
+/** Response mode per interface */
+export type ResponseMode = "inherit" | "custom" | "raw";
+
+/** Mock placeholder presets grouped by type */
+export const MOCK_PLACEHOLDER_PRESETS: Record<string, { value: string; label: string }[]> = {
+  string: [
+    { value: "@cname", label: "中文姓名" },
+    { value: "@name", label: "英文姓名" },
+    { value: "@email", label: "邮箱" },
+    { value: "@phone", label: "手机号" },
+    { value: "@city", label: "城市" },
+    { value: "@province", label: "省份" },
+    { value: "@image", label: "图片URL" },
+    { value: "@url", label: "网址" },
+    { value: "@id", label: "ID" },
+    { value: "@uuid", label: "UUID" },
+    { value: "@date", label: "日期" },
+    { value: "@datetime", label: "日期时间" },
+    { value: "@time", label: "时间" },
+    { value: "@word", label: "随机字符串" },
+    { value: "@cword(2,6)", label: "中文词" },
+    { value: "@sentence", label: "中文句子" },
+    { value: "@title", label: "职称" },
+    { value: "@color", label: "颜色" },
+    { value: "@ip", label: "IP地址" },
+    { value: "@status", label: "状态" },
+  ],
+  number: [
+    { value: "@integer(1,100)", label: "整数 1-100" },
+    { value: "@integer(1,1000)", label: "整数 1-1000" },
+    { value: "@natural(0,1000)", label: "自然数" },
+    { value: "@float(0,100,2)", label: "浮点数" },
+    { value: "@float(10,9999,2)", label: "金额" },
+  ],
+  boolean: [
+    { value: "@boolean", label: "布尔值" },
+  ],
+  array: [
+    { value: "@cname", label: "中文姓名列表" },
+    { value: "@cword(2,4)", label: "中文词列表" },
+  ],
+  object: [],
 };

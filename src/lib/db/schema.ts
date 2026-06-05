@@ -54,6 +54,7 @@ export const apiModules = sqliteTable("api_modules", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  responseWrapper: text("response_wrapper"),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
@@ -79,6 +80,10 @@ export const apiInterfaces = sqliteTable("api_interfaces", {
   responseSchema: text("response_schema"),
   mockResponse: text("mock_response"),
   mockStatusCode: integer("mock_status_code").notNull().default(200),
+  requestFields: text("request_fields"),
+  mockFields: text("mock_fields"),
+  responseMode: text("response_mode", { enum: ["inherit", "custom", "raw"] }).notNull().default("inherit"),
+  customWrapper: text("custom_wrapper"),
   mockHeaders: text("mock_headers"),
   swaggerUrl: text("swagger_url"),
   status: text("status", { enum: ["draft", "active", "deprecated"] })

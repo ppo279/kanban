@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -20,14 +20,22 @@ import {
   PRIORITY_LABEL,
   TASK_TYPES,
   TASK_TYPE_LABEL,
+  HTTP_METHODS,
   type Priority,
   type TaskType,
+  type ApiModule,
 } from "@/types";
 
 interface Props {
   open: boolean;
   onOpenChange: (b: boolean) => void;
 }
+
+const DEFAULT_MOCK_RESPONSE = `{
+  "code": 200,
+  "data": [],
+  "message": "success"
+}`;
 
 export function NewTaskDialog({ open, onOpenChange }: Props) {
   const me = useBoardStore((s) => s.me);
@@ -39,6 +47,16 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
   const [priority, setPriority] = useState<Priority>("med");
   const [type, setType] = useState<TaskType>("feature");
   const [assigneeId, setAssigneeId] = useState(me?.id ?? "");
+  const [loading, setLoading] = useState(false);
+
+  // Mock API specific fields
+  const [modules, setModules] = useState<ApiModule[]>([]);
+  const [moduleId, setModuleId] = useState("");
+  const [newModuleName, setNewModuleName] = useState("");
+  const [mockMethod, setMockMethod] = useState("GET");
+  const [mockPath, setMockPath] = useState("");
+  const [mockResponse, setMockResponse] = useState(DEFAULT_MOCK_RESPONSE);
+  const [mockStatusCode, setMockStatusCode] = useState(200);
 
   useEffect(() => {
     if (me && !assigneeId) {
@@ -46,7 +64,30 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
     }
   }, [me, assigneeId]);
 
-  const [loading, setLoading] = useState(false);
+  // Load modules when dialog opens
+  useEffect(() => {
+    if (open) {
+      fetch("/api/modules", { credentials: "include" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok) setModules(data.modules);
+        })
+        .catch(() => {});
+    }
+  }, [open]);
+
+  const resetForm = useCallback(() => {
+    setTitle("");
+    setDescription("");
+    setPriority("med");
+    setType("feature");
+    setModuleId("");
+    setNewModuleName("");
+    setMockMethod("GET");
+    setMockPath("");
+    setMockResponse(DEFAULT_MOCK_RESPONSE);
+    setMockStatusCode(200);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,6 +95,15 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       toast.error("标题不能为空");
       return;
     }
+
+    // Validate mock-api specific fields
+    if (type === "mock-api") {
+      if (!mockPath.trim()) {
+        toast.error("Mock API 路径不能为空");
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       const r = await fetch("/api/tasks", {
@@ -73,13 +123,16 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
         toast.error(data.error ?? "创建失败");
         return;
       }
-      upsertTask(data.task); // 自己也插入 store（避免依赖 broadcast 时序）
+      upsertTask(data.task);
+
+      // If mock-api type, create associated interface
+      if (type === "mock-api" && data.task) {
+        await createMockInterface(data.task.id);
+      }
+
       toast.success("任务已创建");
       onOpenChange(false);
-      setTitle("");
-      setDescription("");
-      setPriority("med");
-      setType("feature");
+      resetForm();
     } catch (err) {
       toast.error("网络错误");
     } finally {
@@ -87,9 +140,67 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
     }
   }
 
+  async function createMockInterface(taskId: string) {
+    try {
+      // Determine module ID: use existing or create new
+      let finalModuleId = moduleId;
+
+      if (!finalModuleId && newModuleName.trim()) {
+        // Create new module
+        const modR = await fetch("/api/modules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ name: newModuleName.trim() }),
+        });
+        const modData = await modR.json();
+        if (modData.ok) finalModuleId = modData.module.id;
+      }
+
+      if (!finalModuleId) {
+        // Use or create a default "Mock API" module
+        const existing = modules.find((m) => m.name === "Mock API");
+        if (existing) {
+          finalModuleId = existing.id;
+        } else {
+          const modR = await fetch("/api/modules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ name: "Mock API" }),
+          });
+          const modData = await modR.json();
+          if (modData.ok) finalModuleId = modData.module.id;
+        }
+      }
+
+      if (finalModuleId) {
+        await fetch("/api/interfaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            moduleId: finalModuleId,
+            taskId,
+            name: title.trim(),
+            method: mockMethod,
+            path: mockPath.trim(),
+            description: description.trim() || null,
+            mockResponse,
+            mockStatusCode,
+            status: "active",
+          }),
+        });
+      }
+    } catch {
+      // Interface creation failed, but task was created
+      toast.warning("任务已创建，但 Mock 接口配置失败");
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>新建任务</DialogTitle>
           <DialogDescription>任务创建后会出现在「Todo」列</DialogDescription>
@@ -173,6 +284,92 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
               </select>
             </div>
           </div>
+
+          {/* Mock API Configuration Panel */}
+          {type === "mock-api" && (
+            <div className="rounded-md border border-orange-200 bg-orange-50 p-3 space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-orange-700">
+                ⚡ Mock API 配置
+              </div>
+
+              {/* API Module Selection */}
+              <div className="space-y-1">
+                <Label className="text-xs">API 模块分类</Label>
+                <div className="flex gap-1">
+                  <select
+                    value={moduleId}
+                    onChange={(e) => {
+                      setModuleId(e.target.value);
+                      if (e.target.value) setNewModuleName("");
+                    }}
+                    className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-xs"
+                  >
+                    <option value="">选择模块…</option>
+                    {modules.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                  <Input
+                    value={newModuleName}
+                    onChange={(e) => {
+                      setNewModuleName(e.target.value);
+                      if (e.target.value) setModuleId("");
+                    }}
+                    placeholder="或新建模块"
+                    className="h-8 text-xs flex-1"
+                  />
+                </div>
+              </div>
+
+              {/* Method + Path */}
+              <div className="grid grid-cols-[100px_1fr] gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">方法</Label>
+                  <select
+                    value={mockMethod}
+                    onChange={(e) => setMockMethod(e.target.value)}
+                    className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                  >
+                    {HTTP_METHODS.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">路径</Label>
+                  <Input
+                    value={mockPath}
+                    onChange={(e) => setMockPath(e.target.value)}
+                    placeholder="/users"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Mock Response */}
+              <div className="space-y-1">
+                <Label className="text-xs">Mock 响应体 (JSON)</Label>
+                <Textarea
+                  value={mockResponse}
+                  onChange={(e) => setMockResponse(e.target.value)}
+                  rows={5}
+                  className="font-mono text-xs"
+                />
+              </div>
+
+              {/* Status Code */}
+              <div className="space-y-1">
+                <Label className="text-xs">状态码</Label>
+                <Input
+                  type="number"
+                  value={mockStatusCode}
+                  onChange={(e) => setMockStatusCode(Number(e.target.value))}
+                  className="h-8 text-xs w-24"
+                />
+              </div>
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消

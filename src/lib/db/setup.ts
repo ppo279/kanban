@@ -51,6 +51,7 @@ export async function runMigrations() {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      response_wrapper TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
@@ -68,6 +69,10 @@ export async function runMigrations() {
       response_schema TEXT,
       mock_response TEXT,
       mock_status_code INTEGER NOT NULL DEFAULT 200,
+      request_fields TEXT,
+      mock_fields TEXT,
+      response_mode TEXT NOT NULL DEFAULT 'inherit',
+      custom_wrapper TEXT,
       mock_headers TEXT,
       swagger_url TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
@@ -91,6 +96,15 @@ export async function runMigrations() {
   } catch {
     // 列已存在，忽略
   }
+
+  // 迁移：给 api_interfaces 表添加新列
+  try { sqlite.exec(`ALTER TABLE api_interfaces ADD COLUMN mock_fields TEXT`); } catch {}
+  try { sqlite.exec(`ALTER TABLE api_interfaces ADD COLUMN request_fields TEXT`); } catch {}
+  try { sqlite.exec(`ALTER TABLE api_interfaces ADD COLUMN response_mode TEXT NOT NULL DEFAULT 'inherit'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE api_interfaces ADD COLUMN custom_wrapper TEXT`); } catch {}
+
+  // 迁移：给 api_modules 表添加 response_wrapper 列
+  try { sqlite.exec(`ALTER TABLE api_modules ADD COLUMN response_wrapper TEXT`); } catch {}
 
   sqlite.close();
   console.log("[migrate] schema ready at", dbPath);

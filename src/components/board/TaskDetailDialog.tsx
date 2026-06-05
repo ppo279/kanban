@@ -98,7 +98,8 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     setMockTesting(true);
     setMockTestResult(null);
     try {
-      const r = await fetch(mockPath, { method: mockMethod });
+      const url = `/api/mock${mockPath.startsWith("/") ? mockPath : `/${mockPath}`}`;
+      const r = await fetch(url, { method: mockMethod });
       const text = await r.text();
       setMockTestResult(`${r.status} ${r.statusText}\n${text}`);
     } catch (e: any) {
