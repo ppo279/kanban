@@ -5,7 +5,7 @@ import { useEditor, EditorContent, InputRule } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Collaboration from "@tiptap/extension-collaboration";
-import { Extension } from "@tiptap/core";
+import { Extension, markInputRule } from "@tiptap/core";
 import { getSocketInstance } from "@/hooks/useSocket";
 import { getYDoc, getAwareness, connectCollaboration } from "@/lib/collaboration";
 import { CustomCursorPlugin } from "@/lib/tiptap-cursor-plugin";
@@ -123,6 +123,90 @@ const MarkdownInput = Extension.create({
   },
 });
 
+/**
+ * 行内 Markdown 快捷输入
+ * 显式注册行内 mark 的 input rules,使其与 @tiptap/extension-collaboration 兼容
+ * (StarterKit 自带的行内 mark input rules 在 collab 模式下静默失效)
+ *
+ * 支持:
+ *   **加粗**  /  __加粗__       → bold
+ *   *斜体*    /  _斜体_         → italic
+ *   ~~删除线~~                  → strike
+ *   `行内代码`                  → code
+ *   [文本](https://...)         → link
+ *
+ * 注意:
+ *   - 使用 (?:^|\s) 前缀,避免在 1*2*3 / a_b_c 这类表达式里误触
+ *   - markInputRule 拿正则的最后一个 capture group 作为 mark 目标文本
+ *   - 末位 `$` 锚定要求完整闭合才触发
+ *   - 防御性: schema 缺 mark 时跳过(不抛错,不影响其他 mark 工作)
+ */
+const InlineMarkdown = Extension.create({
+  name: "inlineMarkdown",
+
+  addInputRules() {
+    // this.editor 在 addInputRules 调用时已经就绪,可以拿 schema
+    const marks = this.editor.schema.marks;
+    const rules: InputRule[] = [];
+
+    if (marks.bold) {
+      rules.push(
+        markInputRule({
+          find: /(?:^|\s)(\*\*(?!\s)([^\s*][^*]*?)\*\*)$/,
+          type: marks.bold,
+        }),
+        markInputRule({
+          find: /(?:^|\s)(__(?!\s)([^\s_][^_]*?)__)$/,
+          type: marks.bold,
+        }),
+      );
+    }
+
+    if (marks.italic) {
+      rules.push(
+        markInputRule({
+          find: /(?:^|\s)(\*(?!\s)([^\s*][^*]*?)\*)$/,
+          type: marks.italic,
+        }),
+        markInputRule({
+          find: /(?:^|\s)(_(?!\s)([^\s_][^_]*?)_)$/,
+          type: marks.italic,
+        }),
+      );
+    }
+
+    if (marks.strike) {
+      rules.push(
+        markInputRule({
+          find: /(?:^|\s)(~~(?!\s)([^\s~][^~]*?)~~)$/,
+          type: marks.strike,
+        }),
+      );
+    }
+
+    if (marks.code) {
+      rules.push(
+        markInputRule({
+          find: /(`(?!\s)([^`\s][^`]*?)`)$/,
+          type: marks.code,
+        }),
+      );
+    }
+
+    if (marks.link) {
+      rules.push(
+        markInputRule({
+          find: /\[([^\]\s]+)\]\(([^)\s]+)\)$/,
+          type: marks.link,
+          getAttributes: (match) => ({ href: match[2] }),
+        }),
+      );
+    }
+
+    return rules;
+  },
+});
+
 export function CollaborativeEditor({
   docId,
   initialContent,
@@ -153,6 +237,8 @@ export function CollaborativeEditor({
       }),
       // MarkdownInput 必须在 Collaboration 之前，确保 input rules 优先处理
       MarkdownInput,
+      // 行内 markdown (粗体/斜体/删除线/行内代码/链接) 同样需要在 Collaboration 之前
+      InlineMarkdown,
       Collaboration.configure({
         document: yDoc,
         field: "content",
