@@ -11,6 +11,8 @@ export interface MockFieldDef {
   mock: string;
   desc: string;
   required: boolean;
+  /** 子字段 — 仅 array/object 类型生效，定义每个元素/属性的结构 */
+  children?: MockFieldDef[];
 }
 
 // ========== Placeholder generators ==========
@@ -240,12 +242,21 @@ function generateField(field: MockFieldDef): unknown {
       const bool = evalMockRule(rule);
       return typeof bool === "boolean" ? bool : bool === "true";
     case "array": {
-      // Parse count from args like @integer(1,5) or default 3 items
+      // 有 children 时生成结构化数组元素
+      if (field.children && field.children.length > 0) {
+        const count = parseInt(field.mock) || randInt(3, 8);
+        return Array.from({ length: count }, () => generateMockData(field.children!));
+      }
+      // 回退：无 children 时用 mock 规则生成简单值数组
       const count = randInt(2, 5);
       const childRule = rule.replace(/^@\w+(\([^)]*\))?\s*/, "") || "@cword(2,4)";
       return Array.from({ length: count }, () => evalMockRule(childRule.startsWith("@") ? childRule : `@cword`));
     }
     case "object":
+      // 有 children 时生成结构化对象
+      if (field.children && field.children.length > 0) {
+        return generateMockData(field.children);
+      }
       return evalMockRule(rule);
     default:
       return evalMockRule(rule);
@@ -276,8 +287,8 @@ export function wrapResponse(
   };
 }
 
-/** Pagination presets */
-export const PAGINATION_PRESETS: { name: string; fields: MockFieldDef[] }[] = [
+/** 请求参数预设模板 — 用于"请求参数" Tab 的模板填充 */
+export const REQUEST_PRESETS: { name: string; fields: MockFieldDef[] }[] = [
   {
     name: "通用分页",
     fields: [
@@ -307,7 +318,37 @@ export const PAGINATION_PRESETS: { name: string; fields: MockFieldDef[] }[] = [
       { key: "keyword", label: "关键词", type: "string", mock: "@cword(2,4)", desc: "搜索关键词", required: false },
     ],
   },
+  {
+    name: "列表请求（分页+搜索）",
+    fields: [
+      { key: "page", label: "页码", type: "number", mock: "@integer(1,10)", desc: "当前页码", required: true },
+      { key: "pageSize", label: "每页数量", type: "number", mock: "@integer(10,50)", desc: "每页条数", required: true },
+      { key: "keyword", label: "关键词", type: "string", mock: "@cword(2,4)", desc: "搜索关键词", required: false },
+      { key: "sortBy", label: "排序字段", type: "string", mock: "id", desc: "排序字段名", required: false },
+      { key: "sortOrder", label: "排序方向", type: "string", mock: "desc", desc: "asc/desc", required: false },
+    ],
+  },
+  {
+    name: "用户筛选",
+    fields: [
+      { key: "name", label: "用户名", type: "string", mock: "@cname", desc: "按姓名模糊筛选", required: false },
+      { key: "email", label: "邮箱", type: "string", mock: "@email", desc: "按邮箱筛选", required: false },
+      { key: "phone", label: "手机号", type: "string", mock: "@phone", desc: "按手机号筛选", required: false },
+      { key: "status", label: "状态", type: "string", mock: "active", desc: "active/inactive", required: false },
+    ],
+  },
+  {
+    name: "状态筛选",
+    fields: [
+      { key: "status", label: "状态", type: "string", mock: "active", desc: "例如 active/pending/done", required: false },
+      { key: "startTime", label: "开始时间", type: "string", mock: "@datetime", desc: "筛选起始时间", required: false },
+      { key: "endTime", label: "结束时间", type: "string", mock: "@datetime", desc: "筛选结束时间", required: false },
+    ],
+  },
 ];
+
+/** @deprecated 用 REQUEST_PRESETS 代替，保留别名以兼容旧引用 */
+export const PAGINATION_PRESETS = REQUEST_PRESETS;
 
 /** Mock preset field templates for quick start */
 export const MOCK_PRESETS: { name: string; fields: MockFieldDef[] }[] = [
@@ -341,6 +382,23 @@ export const MOCK_PRESETS: { name: string; fields: MockFieldDef[] }[] = [
       { key: "amount", label: "金额", type: "number", mock: "@float(1,10000,2)", desc: "订单金额", required: true },
       { key: "status", label: "状态", type: "string", mock: "@status", desc: "订单状态", required: true },
       { key: "createdAt", label: "创建时间", type: "string", mock: "@datetime", desc: "下单时间", required: true },
+    ],
+  },
+  {
+    name: "分页列表响应",
+    fields: [
+      { key: "total", label: "总数", type: "number", mock: "@integer(50,500)", desc: "数据总条数", required: true },
+      { key: "page", label: "当前页", type: "number", mock: "@integer(1,10)", desc: "当前页码", required: true },
+      { key: "pageSize", label: "每页数量", type: "number", mock: "20", desc: "每页条数", required: true },
+      {
+        key: "list", label: "数据列表", type: "array", mock: "5", desc: "列表数据（展开可编辑元素结构）", required: true,
+        children: [
+          { key: "id", label: "ID", type: "number", mock: "@integer(1,1000)", desc: "数据ID", required: true },
+          { key: "name", label: "名称", type: "string", mock: "@cname", desc: "数据名称", required: true },
+          { key: "status", label: "状态", type: "string", mock: "@status", desc: "数据状态", required: false },
+          { key: "createdAt", label: "创建时间", type: "string", mock: "@datetime", desc: "创建时间", required: false },
+        ],
+      },
     ],
   },
 ];

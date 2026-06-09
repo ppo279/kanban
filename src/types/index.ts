@@ -35,6 +35,7 @@ export interface ApiModule {
   id: string;
   name: string;
   description: string | null;
+  responseWrapper: string | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -47,6 +48,7 @@ export interface MockField {
   mock: string;       // Mock rule, e.g. @name, @integer(1,100)
   desc: string;       // Description
   required: boolean;  // Whether field is required
+  children?: MockField[];  // 子字段 — 仅 array/object 类型生效
 }
 
 export interface ApiInterface {

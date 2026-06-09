@@ -13,15 +13,17 @@ import {
   type MockField,
   type MockFieldType,
 } from "@/types";
-import { MOCK_PRESETS } from "@/lib/mock-engine";
+import { MOCK_PRESETS, REQUEST_PRESETS } from "@/lib/mock-engine";
 
 interface Props {
   fields: MockField[];
   onChange: (fields: MockField[]) => void;
   disabled?: boolean;
+  /** 模板填充模式：request = 请求参数模板（分页/筛选/搜索），response = 响应数据模板（实体/列表） */
+  presetMode?: "request" | "response";
 }
 
-export function MockFieldEditor({ fields, onChange, disabled }: Props) {
+export function MockFieldEditor({ fields, onChange, disabled, presetMode = "response" }: Props) {
   const [showPresets, setShowPresets] = useState(false);
   const [mode, setMode] = useState<"visual" | "json">("visual");
   const [jsonText, setJsonText] = useState(() => JSON.stringify(fields, null, 2));
@@ -51,7 +53,7 @@ export function MockFieldEditor({ fields, onChange, disabled }: Props) {
     setExpandedField(fields.length); // Auto-expand new field
   }
 
-  function applyPreset(preset: typeof MOCK_PRESETS[number]) {
+  function applyPreset(preset: typeof MOCK_PRESETS[number] | typeof REQUEST_PRESETS[number]) {
     onChange(preset.fields);
     setJsonText(JSON.stringify(preset.fields, null, 2));
     setShowPresets(false);
@@ -124,7 +126,7 @@ export function MockFieldEditor({ fields, onChange, disabled }: Props) {
                   <div className="text-[10px] font-semibold text-muted-foreground px-2 py-0.5">
                     选择模板
                   </div>
-                  {MOCK_PRESETS.map((preset) => (
+                  {(presetMode === "request" ? REQUEST_PRESETS : MOCK_PRESETS).map((preset) => (
                     <button
                       key={preset.name}
                       type="button"
@@ -331,6 +333,26 @@ export function MockFieldEditor({ fields, onChange, disabled }: Props) {
                         disabled={disabled}
                       />
                     </div>
+
+                    {/* 子字段编辑 — 仅 array / object 类型 */}
+                    {(field.type === "array" || field.type === "object") && (
+                      <div className="space-y-2 pl-3 border-l-2 border-orange-200">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-medium text-orange-700">
+                            {field.type === "array" ? "数组元素结构" : "对象属性结构"}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            定义每个{field.type === "array" ? "元素" : "属性"}包含的字段
+                          </span>
+                        </div>
+                        <MockFieldEditor
+                          fields={field.children || []}
+                          onChange={(children) => updateField(idx, { children })}
+                          presetMode={presetMode}
+                          disabled={disabled}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

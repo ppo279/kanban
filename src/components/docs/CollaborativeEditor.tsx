@@ -6,6 +6,16 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Collaboration from "@tiptap/extension-collaboration";
 import { Extension } from "@tiptap/core";
+import { Heading } from "@tiptap/extension-heading";
+import { Bold } from "@tiptap/extension-bold";
+import { Italic } from "@tiptap/extension-italic";
+import { Strike } from "@tiptap/extension-strike";
+import { Code } from "@tiptap/extension-code";
+import { CodeBlock } from "@tiptap/extension-code-block";
+import { Blockquote } from "@tiptap/extension-blockquote";
+import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
+import { Link } from "@tiptap/extension-link";
+import { BulletList, OrderedList } from "@tiptap/extension-list";
 import { getSocketInstance } from "@/hooks/useSocket";
 import { getYDoc, getAwareness, connectCollaboration } from "@/lib/collaboration";
 import { CustomCursorPlugin } from "@/lib/tiptap-cursor-plugin";
@@ -142,13 +152,10 @@ const MarkdownOnEnter = Extension.create({
           const content = hMatch[2];
           const from = block.pos;
           const to = block.pos + node.nodeSize;
-          // markdown 符号长度 = "#".repeat(level) + " "
-          const markerLen = level + 1;
           const tr = state.tr;
-          tr.setBlockType(from, to, headingNode, { level });
-          // 删掉从段内位置 0 到 markerLen 的 markdown 符号,插入内容
-          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
-          state.apply(tr);
+          // 一次性替换整段为 heading,避免 setBlockType + replaceWith 导致内容重复
+          tr.replaceRangeWith(from, to, headingNode.create({ level }, schema.text(content)));
+          editor.view.dispatch(tr);
           return true;
         }
 
@@ -160,7 +167,7 @@ const MarkdownOnEnter = Extension.create({
           tr.setBlockType(from, to, codeBlockNode);
           // 删掉段内全部内容
           tr.delete(from + 1, to - 1);
-          state.apply(tr);
+          editor.view.dispatch(tr);
           return true;
         }
 
@@ -170,41 +177,54 @@ const MarkdownOnEnter = Extension.create({
           const content = qMatch[1];
           const from = block.pos;
           const to = block.pos + node.nodeSize;
-          // markdown 符号 "> "
-          const markerLen = 2;
           const tr = state.tr;
-          tr.setBlockType(from, to, blockquoteNode);
-          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
-          state.apply(tr);
+          // blockquote 要求 block 子节点,不能直接放 text — 包一层 paragraph
+          tr.replaceRangeWith(
+            from,
+            to,
+            blockquoteNode.create(null, paragraphNode.create(null, schema.text(content)))
+          );
+          editor.view.dispatch(tr);
           return true;
         }
 
         // - / * 无序列表
         const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
-        if (ulMatch && listItemNode) {
+        if (ulMatch && bulletListNode && listItemNode) {
           const content = ulMatch[1];
           const from = block.pos;
           const to = block.pos + node.nodeSize;
-          // marker "- " 或 "* "
-          const markerLen = 2;
           const tr = state.tr;
-          tr.setBlockType(from, to, listItemNode);
-          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
-          state.apply(tr);
+          // listItem 不是 textblock,不能 setBlockType — 用 replaceRangeWith 创建完整结构
+          tr.replaceRangeWith(
+            from,
+            to,
+            bulletListNode.create(
+              null,
+              listItemNode.create(null, paragraphNode.create(null, schema.text(content)))
+            )
+          );
+          editor.view.dispatch(tr);
           return true;
         }
 
         // 1. / 1) 有序列表
         const olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
-        if (olMatch && listItemNode) {
+        if (olMatch && orderedListNode && listItemNode) {
           const content = olMatch[2];
-          const markerLen = olMatch[1].length + 2; // 数字长度 + ". " 或 ") "
           const from = block.pos;
           const to = block.pos + node.nodeSize;
           const tr = state.tr;
-          tr.setBlockType(from, to, listItemNode);
-          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
-          state.apply(tr);
+          // listItem 不是 textblock,不能 setBlockType — 用 replaceRangeWith 创建完整结构
+          tr.replaceRangeWith(
+            from,
+            to,
+            orderedListNode.create(
+              null,
+              listItemNode.create(null, paragraphNode.create(null, schema.text(content)))
+            )
+          );
+          editor.view.dispatch(tr);
           return true;
         }
 
@@ -216,7 +236,7 @@ const MarkdownOnEnter = Extension.create({
           // 水平线必须放在 paragraph 里(它是 inline atom block)
           tr.setBlockType(from, to, paragraphNode);
           tr.replaceWith(from + 1, to - 1, horizontalRuleNode.create());
-          state.apply(tr);
+          editor.view.dispatch(tr);
           return true;
         }
 
@@ -229,7 +249,7 @@ const MarkdownOnEnter = Extension.create({
           tr.setBlockType(from, to, paragraphNode);
           // 整段替换为带 mark 的文本
           tr.replaceWith(from + 1, to - 1, schema.text(inline.text, inline.marks));
-          state.apply(tr);
+          editor.view.dispatch(tr);
           return true;
         }
 
@@ -239,6 +259,16 @@ const MarkdownOnEnter = Extension.create({
     };
   },
 });
+
+/**
+ * 创建一个禁用 input rules 的扩展副本
+ * 用于替换 StarterKit 中自带 input rules 的那些扩展,
+ * 这样用户输入 `# title` + 空格 时不会立刻转换,
+ * 而是等按 Enter 时由 MarkdownOnEnter 处理。
+ */
+function withoutInputRules<T extends Extension>(Ext: any): T {
+  return (Ext as any).extend({ addInputRules: () => [] });
+}
 
 export function CollaborativeEditor({
   docId,
@@ -261,9 +291,40 @@ export function CollaborativeEditor({
 
   const editor = useEditor({
     extensions: [
+      // StarterKit 提供基础扩展(Document/Text/Paragraph 等不含 input rules 的扩展)
       StarterKit.configure({
         // @ts-ignore - Tiptap v3 API differences
         history: false,
+        // 禁用所有自带 input rules 的扩展,改用下方手动引入的无 input rules 版本
+        heading: false,
+        bold: false,
+        italic: false,
+        strike: false,
+        code: false,
+        codeBlock: false,
+        blockquote: false,
+        bulletList: false,
+        orderedList: false,
+        horizontalRule: false,
+        link: false,
+      }),
+      // 手动注册各扩展,禁用 input rules → 只在 Enter 时触发转换
+      withoutInputRules(Heading),
+      withoutInputRules(Bold),
+      withoutInputRules(Italic),
+      withoutInputRules(Strike),
+      withoutInputRules(Code),
+      withoutInputRules(CodeBlock),
+      withoutInputRules(Blockquote),
+      withoutInputRules(BulletList),
+      withoutInputRules(OrderedList),
+      withoutInputRules(HorizontalRule),
+      // Link 用 addInputRules? 它实际用 addPasteRules + addProseMirrorPlugins(autolink),
+      // 没有 input rules，使用 configure({ autolink: false, linkOnPaste: false })
+      // 避免粘贴 URL 时自动生成链接——让用户按 Enter 再处理
+      Link.configure({
+        autolink: false,
+        linkOnPaste: false,
       }),
       Placeholder.configure({
         placeholder: "开始写作… 支持 Markdown 快捷输入",
@@ -341,7 +402,9 @@ export function CollaborativeEditor({
 
   const handleSave = useCallback(() => {
     if (!editor || savedRef.current) return;
-    const content = editor.getText();
+    // 保存 JSON 格式的文档结构（含 heading/bold/list 等格式），
+    // 纯文本用 editor.getText() 会丢掉所有格式。
+    const content = JSON.stringify(editor.getJSON());
     onSave(content);
     savedRef.current = true;
   }, [editor, onSave]);

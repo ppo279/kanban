@@ -14,6 +14,8 @@ import {
   Copy,
   Check,
   Settings,
+  RotateCcw,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -771,10 +773,22 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-semibold">请求字段定义</Label>
+                  {editRequestFields.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setEditRequestFields([])}
+                      className="text-[10px] text-muted-foreground hover:text-red-500 transition-colors flex items-center gap-1"
+                      title="清空所有请求字段"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      重置
+                    </button>
+                  )}
                 </div>
                 <MockFieldEditor
                   fields={editRequestFields}
                   onChange={setEditRequestFields}
+                  presetMode="request"
                 />
                 {editRequestFields.length === 0 && (
                   <p className="text-[10px] text-muted-foreground">
@@ -800,6 +814,41 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
                     <option value="inherit">继承模块</option>
                   </select>
                 </div>
+
+                {/* Inherit Mode — show parent module's wrapper config */}
+                {editResponseMode === "inherit" && selectedIface && (() => {
+                  const parentModule = modules.find((m) => m.id === selectedIface.moduleId);
+                  let wrapper: ResponseWrapper = { enabled: true, codeField: "code", messageField: "message", dataField: "data", successCode: 200 };
+                  if (parentModule?.responseWrapper) {
+                    try {
+                      const parsed = JSON.parse(parentModule.responseWrapper);
+                      wrapper = { ...wrapper, ...parsed };
+                    } catch { /* use defaults */ }
+                  }
+                  return (
+                    <div className="rounded-md border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Info className="h-3.5 w-3.5 text-blue-500" />
+                        <span className="text-xs font-semibold text-blue-700">
+                          继承模块「{parentModule?.name ?? "—"}」的响应包装
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-blue-600/80">
+                        该接口将使用父模块定义的响应信封（code + message + data），无需重复配置。
+                        如需独立设置，请切换为「自定义包装」。
+                      </p>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                        <div><span className="text-muted-foreground">状态码字段：</span><code className="text-blue-700">{wrapper.codeField}</code></div>
+                        <div><span className="text-muted-foreground">消息字段：</span><code className="text-blue-700">{wrapper.messageField}</code></div>
+                        <div><span className="text-muted-foreground">数据字段：</span><code className="text-blue-700">{wrapper.dataField}</code></div>
+                        <div><span className="text-muted-foreground">成功值：</span><code className="text-blue-700">{wrapper.successCode}</code></div>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        包装{ wrapper.enabled ? "已" : "未" }启用 · 模块字段定义继承自父模块的 Mock 字段配置
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Custom Wrapper Config */}
                 {editResponseMode === "custom" && (
@@ -959,10 +1008,24 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
 
                 {/* Mock Fields */}
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Mock 字段定义</Label>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold">Mock 字段定义</Label>
+                    {editMockFields.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditMockFields([])}
+                        className="text-[10px] text-muted-foreground hover:text-red-500 transition-colors flex items-center gap-1"
+                        title="清空所有响应字段"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        重置
+                      </button>
+                    )}
+                  </div>
                   <MockFieldEditor
                     fields={editMockFields}
                     onChange={setEditMockFields}
+                    presetMode="response"
                   />
                   {editMockFields.length === 0 && (
                     <div className="space-y-1 mt-2">
