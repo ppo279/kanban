@@ -35,7 +35,7 @@ data/test-*.db-wal
 .idea/
 
 # 文档与截图（不入库）
-docs/
+/docs/
 
 # env
 .env*.local
