@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { useEditor, EditorContent, InputRule } from "@tiptap/react";
+import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Collaboration from "@tiptap/extension-collaboration";
-import { Extension, markInputRule } from "@tiptap/core";
+import { Extension } from "@tiptap/core";
 import { getSocketInstance } from "@/hooks/useSocket";
 import { getYDoc, getAwareness, connectCollaboration } from "@/lib/collaboration";
 import { CustomCursorPlugin } from "@/lib/tiptap-cursor-plugin";
@@ -33,177 +33,210 @@ function textToTiptapJSON(text: string) {
 }
 
 /**
- * Custom Markdown 快捷输入扩展
- * 显式添加 input rules 使其与 @tiptap/extension-collaboration 兼容
- */
-const MarkdownInput = Extension.create({
-  name: "markdownInput",
-
-  addInputRules() {
-    return [
-      // 标题: # → h1, ## → h2, ..., ###### → h6
-      ...[1, 2, 3, 4, 5, 6].map((level) => {
-        const regex = new RegExp(`^#{1,${level}}\\s$`);
-        return new InputRule({
-          find: regex,
-          handler: ({ state, range, match }) => {
-            const $from = state.doc.resolve(range.from);
-            const nodeType = state.schema.nodes.heading;
-            if (nodeType) {
-              state.tr
-                .delete(range.from - match[0].length, range.to)
-                .setBlockType($from.pos, $from.end(), nodeType, { level });
-            }
-          },
-        });
-      }),
-      // 无序列表: * 或 - 后跟空格
-      new InputRule({
-        find: /^\s*([-*])\s$/,
-        handler: ({ state, range, match }) => {
-          const nodeType = state.schema.nodes.bulletList;
-          const listItemType = state.schema.nodes.listItem;
-          if (nodeType && listItemType) {
-            state.tr
-              .delete(range.from - match[0].length, range.to)
-              .replaceRangeWith(range.from, range.from, nodeType.create(null, listItemType.create(null)));
-          }
-        },
-      }),
-      // 有序列表: 1. 后跟空格
-      new InputRule({
-        find: /^\s*(\d+)\.\s$/,
-        handler: ({ state, range, match }) => {
-          const nodeType = state.schema.nodes.orderedList;
-          const listItemType = state.schema.nodes.listItem;
-          if (nodeType && listItemType) {
-            state.tr
-              .delete(range.from - match[0].length, range.to)
-              .replaceRangeWith(range.from, range.from, nodeType.create(null, listItemType.create(null)));
-          }
-        },
-      }),
-      // 引用块: > 后跟空格
-      new InputRule({
-        find: /^\s*>\s$/,
-        handler: ({ state, range, match }) => {
-          const nodeType = state.schema.nodes.blockquote;
-          if (nodeType) {
-            state.tr
-              .delete(range.from - match[0].length, range.to)
-              .setBlockType(range.from, range.from, nodeType);
-          }
-        },
-      }),
-      // 代码块: ``` 后跟空格
-      new InputRule({
-        find: /^```\s$/,
-        handler: ({ state, range, match }) => {
-          const nodeType = state.schema.nodes.codeBlock;
-          if (nodeType) {
-            state.tr
-              .delete(range.from - match[0].length, range.to)
-              .setBlockType(range.from, range.from, nodeType);
-          }
-        },
-      }),
-      // 水平线: --- 或 *** 后跟空格
-      new InputRule({
-        find: /^(---|\*\*\*)\s$/,
-        handler: ({ state, range, match }) => {
-          const nodeType = state.schema.nodes.horizontalRule;
-          if (nodeType) {
-            state.tr
-              .delete(range.from - match[0].length, range.to)
-              .replaceSelectionWith(nodeType.create());
-          }
-        },
-      }),
-    ];
-  },
-});
-
-/**
- * 行内 Markdown 快捷输入
- * 显式注册行内 mark 的 input rules,使其与 @tiptap/extension-collaboration 兼容
- * (StarterKit 自带的行内 mark input rules 在 collab 模式下静默失效)
+ * Markdown 快捷输入扩展
+ * 设计: 按 Enter 键时,扫描当前段落,若整段是合法 markdown 则转换。
+ *      解决了 "输 `# 1` 后必须输空格才生效" 的不直观问题,贴近 Typora/Obsidian 习惯。
  *
- * 支持:
- *   **加粗**  /  __加粗__       → bold
- *   *斜体*    /  _斜体_         → italic
- *   ~~删除线~~                  → strike
- *   `行内代码`                  → code
- *   [文本](https://...)         → link
+ * 为什么用 Enter 而不是 input rule:
+ *   1. Tiptap 的 InputRule 是"输字符时"触发(空格/`*`),要求用户**记住**每个语法前后该输什么
+ *   2. 用户更自然的写法是"我先随便写,写完一行按回车让它变成 markdown"
+ *   3. 跟 @tiptap/extension-collaboration 兼容性更好 — input rule 在 collab 下需要各种 trick
  *
- * 注意:
- *   - 使用 (?:^|\s) 前缀,避免在 1*2*3 / a_b_c 这类表达式里误触
- *   - markInputRule 拿正则的最后一个 capture group 作为 mark 目标文本
- *   - 末位 `$` 锚定要求完整闭合才触发
- *   - 防御性: schema 缺 mark 时跳过(不抛错,不影响其他 mark 工作)
+ * 实现:
+ *   - 拦截 Enter keydown (addKeyboardShortcuts 返回 true)
+ *   - 取 $from.parent 拿到当前 paragraph/heading/listItem
+ *   - 文本 trim 后匹配下列规则
+ *   - 匹配上: 在一个 transaction 里删掉 markdown 符号 + 改 block type + 加 mark
+ *   - 匹配不上: return false,让默认 enter 走(新开一段)
  */
-const InlineMarkdown = Extension.create({
-  name: "inlineMarkdown",
 
-  addInputRules() {
-    // this.editor 在 addInputRules 调用时已经就绪,可以拿 schema
-    const marks = this.editor.schema.marks;
-    const rules: InputRule[] = [];
-
-    if (marks.bold) {
-      rules.push(
-        markInputRule({
-          find: /(?:^|\s)(\*\*(?!\s)([^\s*][^*]*?)\*\*)$/,
-          type: marks.bold,
-        }),
-        markInputRule({
-          find: /(?:^|\s)(__(?!\s)([^\s_][^_]*?)__)$/,
-          type: marks.bold,
-        }),
-      );
+/** 找到光标所在的最里层可被转换的 block (paragraph/heading/listItem),返回 {node, pos} 或 null */
+function getConvertibleBlock(state: any): { node: any; pos: number; $from: any } | null {
+  const { $from } = state.selection;
+  const depth = $from.depth;
+  for (let d = depth; d >= 0; d--) {
+    const node = $from.node(d);
+    if (node.isTextblock) {
+      return { node, pos: $from.before(d), $from };
     }
+  }
+  return null;
+}
 
-    if (marks.italic) {
-      rules.push(
-        markInputRule({
-          find: /(?:^|\s)(\*(?!\s)([^\s*][^*]*?)\*)$/,
-          type: marks.italic,
-        }),
-        markInputRule({
-          find: /(?:^|\s)(_(?!\s)([^\s_][^_]*?)_)$/,
-          type: marks.italic,
-        }),
-      );
-    }
+/** 检测整段内容是否整段都是某个 markdown 行内标记,若是,返回 { text, marks[] } */
+function detectInlineMarkdown(text: string, schema: any): { text: string; marks: any[] } | null {
+  const marks: any[] = [];
+  let body = text;
 
-    if (marks.strike) {
-      rules.push(
-        markInputRule({
-          find: /(?:^|\s)(~~(?!\s)([^\s~][^~]*?)~~)$/,
-          type: marks.strike,
-        }),
-      );
-    }
+  // **加粗** / __加粗__
+  let m = body.match(/^\*\*([^\s*][^*]*?[^\s*]|[^\s*])\*\*$/) || body.match(/^__([^\s_][^_]*?[^\s_]|[^\s_])__$/);
+  if (m && schema.marks.bold) {
+    marks.push(schema.marks.bold.create());
+    body = m[1];
+  }
+  // ~~删除线~~
+  m = body.match(/^~~([^\s~][^~]*?[^\s~]|[^\s~])~~$/);
+  if (m && schema.marks.strike) {
+    marks.push(schema.marks.strike.create());
+    body = m[1];
+  }
+  // *斜体* / _斜体_
+  m = body.match(/^\*([^\s*][^*]*?[^\s*]|[^\s*])\*$/) || body.match(/^_([^\s_][^_]*?[^\s_]|[^\s_])_$/);
+  if (m && schema.marks.italic) {
+    marks.push(schema.marks.italic.create());
+    body = m[1];
+  }
+  // `行内代码`
+  m = body.match(/^`([^`\s][^`]*?[^`\s]|[^`\s])`$/);
+  if (m && schema.marks.code) {
+    marks.push(schema.marks.code.create());
+    body = m[1];
+  }
+  // [文本](url)
+  m = body.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
+  if (m && schema.marks.link) {
+    marks.push(schema.marks.link.create({ href: m[2] }));
+    body = m[1];
+  }
 
-    if (marks.code) {
-      rules.push(
-        markInputRule({
-          find: /(`(?!\s)([^`\s][^`]*?)`)$/,
-          type: marks.code,
-        }),
-      );
-    }
+  if (marks.length === 0) return null;
+  return { text: body, marks };
+}
 
-    if (marks.link) {
-      rules.push(
-        markInputRule({
-          find: /\[([^\]\s]+)\]\(([^)\s]+)\)$/,
-          type: marks.link,
-          getAttributes: (match) => ({ href: match[2] }),
-        }),
-      );
-    }
+const MarkdownOnEnter = Extension.create({
+  name: "markdownOnEnter",
 
-    return rules;
+  addKeyboardShortcuts() {
+    return {
+      Enter: ({ editor }) => {
+        const state = editor.state;
+        const block = getConvertibleBlock(state);
+        if (!block) return false;
+
+        const { node } = block;
+        // 段落必须非空
+        if (node.content.size === 0) return false;
+
+        const text = node.textContent;
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+
+        const schema = state.schema;
+        const headingNode = schema.nodes.heading;
+        const paragraphNode = schema.nodes.paragraph;
+        const codeBlockNode = schema.nodes.codeBlock;
+        const blockquoteNode = schema.nodes.blockquote;
+        const bulletListNode = schema.nodes.bulletList;
+        const orderedListNode = schema.nodes.orderedList;
+        const listItemNode = schema.nodes.listItem;
+        const horizontalRuleNode = schema.nodes.horizontalRule;
+
+        // ── 块级规则 ──
+        // 共同模式: 改 block type + 删掉 markdown 符号 + 替换为新文本
+        // 用 tr.replaceWith(from+1, to-1, newContent) 一次完成,避免分步 position 错乱
+
+        // # / ## / ### ... 标题 (要求 # 后必须有内容,空 `#` 不转)
+        const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+        if (hMatch && headingNode) {
+          const level = hMatch[1].length;
+          const content = hMatch[2];
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          // markdown 符号长度 = "#".repeat(level) + " "
+          const markerLen = level + 1;
+          const tr = state.tr;
+          tr.setBlockType(from, to, headingNode, { level });
+          // 删掉从段内位置 0 到 markerLen 的 markdown 符号,插入内容
+          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
+          state.apply(tr);
+          return true;
+        }
+
+        // ``` 代码块 (整段就 ```,转成空 code block)
+        if (trimmed === "```" && codeBlockNode) {
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          const tr = state.tr;
+          tr.setBlockType(from, to, codeBlockNode);
+          // 删掉段内全部内容
+          tr.delete(from + 1, to - 1);
+          state.apply(tr);
+          return true;
+        }
+
+        // > 引用块
+        const qMatch = trimmed.match(/^>\s+(.*)$/);
+        if (qMatch && blockquoteNode) {
+          const content = qMatch[1];
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          // markdown 符号 "> "
+          const markerLen = 2;
+          const tr = state.tr;
+          tr.setBlockType(from, to, blockquoteNode);
+          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
+          state.apply(tr);
+          return true;
+        }
+
+        // - / * 无序列表
+        const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        if (ulMatch && listItemNode) {
+          const content = ulMatch[1];
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          // marker "- " 或 "* "
+          const markerLen = 2;
+          const tr = state.tr;
+          tr.setBlockType(from, to, listItemNode);
+          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
+          state.apply(tr);
+          return true;
+        }
+
+        // 1. / 1) 有序列表
+        const olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+        if (olMatch && listItemNode) {
+          const content = olMatch[2];
+          const markerLen = olMatch[1].length + 2; // 数字长度 + ". " 或 ") "
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          const tr = state.tr;
+          tr.setBlockType(from, to, listItemNode);
+          tr.replaceWith(from + 1, from + 1 + markerLen, schema.text(content));
+          state.apply(tr);
+          return true;
+        }
+
+        // --- / *** 水平线
+        if ((trimmed === "---" || trimmed === "***") && horizontalRuleNode) {
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          const tr = state.tr;
+          // 水平线必须放在 paragraph 里(它是 inline atom block)
+          tr.setBlockType(from, to, paragraphNode);
+          tr.replaceWith(from + 1, to - 1, horizontalRuleNode.create());
+          state.apply(tr);
+          return true;
+        }
+
+        // ── 行内规则 (整段内容都是 mark 标记时) ──
+        const inline = detectInlineMarkdown(trimmed, schema);
+        if (inline && inline.text && paragraphNode) {
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          const tr = state.tr;
+          tr.setBlockType(from, to, paragraphNode);
+          // 整段替换为带 mark 的文本
+          tr.replaceWith(from + 1, to - 1, schema.text(inline.text, inline.marks));
+          state.apply(tr);
+          return true;
+        }
+
+        // 没匹配上,让默认 enter 走 (新开一段)
+        return false;
+      },
+    };
   },
 });
 
@@ -235,10 +268,8 @@ export function CollaborativeEditor({
       Placeholder.configure({
         placeholder: "开始写作… 支持 Markdown 快捷输入",
       }),
-      // MarkdownInput 必须在 Collaboration 之前，确保 input rules 优先处理
-      MarkdownInput,
-      // 行内 markdown (粗体/斜体/删除线/行内代码/链接) 同样需要在 Collaboration 之前
-      InlineMarkdown,
+      // Markdown 快捷输入: 按 Enter 时扫描当前段,匹配整段 markdown 则转换
+      MarkdownOnEnter,
       Collaboration.configure({
         document: yDoc,
         field: "content",
