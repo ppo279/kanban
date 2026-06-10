@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import {
@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { Column } from "./Column";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { TaskDetailDialog } from "./TaskDetailDialog";
+import { DocDetailDialog } from "@/components/docs/DocDetailDialog";
 import { TaskCard } from "./TaskCard";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
@@ -152,10 +153,30 @@ export function Board() {
       setFlashTaskId(taskId);
       setTimeout(() => {
         setFlashTaskId((curr) => (curr === taskId ? null : curr));
-      }, 1600);
+}, 1600);
     };
     window.addEventListener("kanban:jump-to-task", onJump);
     return () => window.removeEventListener("kanban:jump-to-task", onJump);
+  }, [sidebarOpen]);
+
+  // ── 监听"跳转到文档"事件(TaskCard 徽章 / TaskDetailDialog / ApiDocPanel 派发) ──
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const ce = e as CustomEvent<{ docId: string }>;
+      const docId = ce.detail?.docId;
+      if (!docId) return;
+      // 1. 开 sidebar,切到 docs tab
+      if (!sidebarOpen) setSidebarOpen(true);
+      window.dispatchEvent(
+        new CustomEvent("kanban:switch-to-docs-tab", { detail: { docId } })
+      );
+      // 2. 让 DocPanel 打开指定 doc(再走 fetch + setSelectedDoc)
+      window.dispatchEvent(
+        new CustomEvent("kanban:open-doc", { detail: { docId } })
+      );
+    };
+    window.addEventListener("kanban:jump-to-doc", onJump);
+    return () => window.removeEventListener("kanban:jump-to-doc", onJump);
   }, [sidebarOpen]);
 
   if (!hydrated) {
@@ -252,8 +273,9 @@ export function Board() {
         />
       </div>
 
-      <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
+<NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
       <TaskDetailDialog task={detailTask} open={detailOpen} onOpenChange={setDetailOpen} />
+      <DocDetailDialog />
     </div>
   );
 }

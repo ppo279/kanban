@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { FileText, Code2, PanelRightClose } from "lucide-react";
 import { cn } from "@/lib/util";
 import { ApiDocPanel } from "./ApiDocPanel";
@@ -16,6 +16,14 @@ interface Props {
 
 export function DocSidebar({ open, onToggle, selectedTaskId }: Props) {
   const [tab, setTab] = useState<Tab>("api");
+
+  // 外部跳转到 doc 时,强制切到 docs tab
+  useEffect(() => {
+    const onSwitch = () => setTab("docs");
+    window.addEventListener("kanban:switch-to-docs-tab", onSwitch);
+    return () =>
+      window.removeEventListener("kanban:switch-to-docs-tab", onSwitch);
+  }, []);
 
   return (
     <div

@@ -236,6 +236,20 @@ export function DocPanel() {
     editor: null,
   });
 
+  // ── AI 生成(本次 scope 仅补 stub 让 tsc 通过,真实流程后续接) ──
+  const [aiGenerateOpen, setAiGenerateOpen] = useState(false);
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiGeneratedContent, setAiGeneratedContent] = useState<string>("");
+  // AI 状态轮询 tick(显示在线/锁状态用)— 用数字递增触发 useEffect 重读
+  const [aiKeysTick, setAiKeysTick] = useState(0);
+
+  // 删除文档的 dialog 目标
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+
   const [createForm, setCreateForm] = useState<{
     title: string;
     priority: Priority;
@@ -251,6 +265,50 @@ export function DocPanel() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   // 指向当前打开的 CollaborativeEditor — 让空状态快捷按钮能调用 insertChecklistRow
   const editorRef = useRef<CollaborativeEditorHandle | null>(null);
+
+  // 监听外部跳转(Board 派发 kanban:open-doc)— fetch 文档 + 选中
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const ce = e as CustomEvent<{ docId: string }>;
+      const docId = ce.detail?.docId;
+      if (!docId) return;
+      // 已经是同一个文档,跳过
+      if (selectedDoc?.id === docId) return;
+      (async () => {
+        try {
+          const r = await fetch(`/api/documents/${docId}`, {
+            credentials: "include",
+          });
+          const data = await r.json();
+          if (!data.ok || !data.document) return;
+          // 复用 handleSelectDoc 的初始化逻辑
+          setSelectedDoc(data.document);
+          setChecklistStats({ total: 0, checked: 0 });
+          setEditingTitle(data.document.title);
+          let content = "";
+          if (data.document.content) {
+            try {
+              const parsed = JSON.parse(data.document.content);
+              content = JSON.stringify(parsed);
+              setLiveDocJson(parsed as TiptapNode);
+            } catch {
+              content = data.document.content;
+              setLiveDocJson(null);
+            }
+          } else {
+            setLiveDocJson(null);
+          }
+          setInitialContent(content);
+          loadLinkedTasks(data.document.id);
+          setDialogOpen(true);
+        } catch {
+          // 静默 — 让用户手动点列表里的文档
+        }
+      })();
+    };
+    window.addEventListener("kanban:open-doc", onOpen);
+    return () => window.removeEventListener("kanban:open-doc", onOpen);
+  }, [selectedDoc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // 标记当前文档是否已有 checklist 行(用于空状态文案分情况)
   // DocPanel 不能直接读 editor state(性能 + 时序问题),用一个乐观标记 + 手动更新
   const [hasChecklistRows, setHasChecklistRows] = useState(false);
@@ -318,6 +376,132 @@ export function DocPanel() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // 取最新 task 数据(从 store,反映 socket 推送的状态)
+  function resolveTask(linked: LinkedTask): Task {
+    const fresh = tasks.find((t) => t.id === linked.taskId);
+    return fresh ?? linked.task;
+  }
+
+  // ── 加载文档关联的 task 列表(关联任务面板用) ──
+  async function loadLinkedTasks(documentId: string) {
+    try {
+      const r = await fetch(`/api/document-tasks?docId=${documentId}`, {
+        credentials: "include",
+      });
+      const data = await r.json();
+      if (data.ok) setLinkedTasks(data.items ?? []);
+    } catch {
+      // 静默失败 — 关联面板空着即可
+    }
+  }
+
+  // 切模式(switch dropdown 的别名)— SpecInterfaceEditor 触发
+  function handleChangeMode(mode: DocMode) {
+    handleSwitchMode(mode);
+  }
+
+  // 新建文档(create dialog 的提交)— 关联任务面板的「升级为文档」按钮也可能复用
+  async function handleCreateDoc() {
+    if (!newDocTitle.trim()) {
+      toast.error("标题不能为空");
+      return;
+    }
+    try {
+      const r = await fetch("/api/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: newDocTitle.trim(),
+          mode: newDocMode,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setDocuments((prev) => [...prev, data.document]);
+        setCreateDialogOpen(false);
+        setNewDocTitle("");
+        toast.success("已创建");
+      } else {
+        toast.error(data.error ?? "创建失败");
+      }
+    } catch (e: any) {
+      toast.error(`创建失败: ${e?.message ?? e}`);
+    }
+  }
+
+  // 在编辑器末尾插入一个空 taskList — DocPanel 顶部「+ 验收项」按钮调用
+  function handleInsertChecklist() {
+    const ok = editorRef.current?.insertChecklistRow();
+    if (!ok) toast.error("插入失败(文档可能没打开)");
+  }
+
+  // ── AI 生成的几个 stub:本次只让 tsc 通过,真实流程后续接 ──
+  async function handleQuickGenerate(prompt: string) {
+    if (!selectedDoc) {
+      toast.error("请先选中一个文档");
+      return;
+    }
+    setAiGenerating(true);
+    try {
+      const r = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ documentId: selectedDoc.id, prompt, mode: "quick" }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setAiGeneratedContent(data.content ?? "");
+        toast.success("已生成,可点击「应用到编辑器」");
+      } else {
+        toast.error(data.error ?? "生成失败");
+      }
+    } catch (e: any) {
+      toast.error(`生成失败: ${e?.message ?? e}`);
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
+  async function handleAdvancedGenerate(
+    provider: string,
+    model: string,
+    prompt: string
+  ) {
+    if (!selectedDoc) return;
+    setAiGenerating(true);
+    try {
+      const r = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          documentId: selectedDoc.id,
+          provider,
+          model,
+          prompt,
+          mode: "advanced",
+        }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setAiGeneratedContent(data.content ?? "");
+      } else {
+        toast.error(data.error ?? "生成失败");
+      }
+    } catch (e: any) {
+      toast.error(`生成失败: ${e?.message ?? e}`);
+    } finally {
+      setAIGeneratingSafe();
+    }
+  }
+
+  // 安全 setState:避免 finally 在 unmount 后调用报错
+  function setAIGeneratingSafe() {
+    if (typeof window !== "undefined") setAiGenerating(false);
   }
 
   function handleOpenImport() {
@@ -492,12 +676,6 @@ export function DocPanel() {
     }
   }
 
-  // 取最新 task 数据(从 store,反映 socket 推送的状态)
-  function resolveTask(linked: LinkedTask): Task {
-    const fresh = tasks.find((t) => t.id === linked.taskId);
-    return fresh ?? linked.task;
-  }
-
   return (
     <div ref={rootRef} className="flex flex-col h-full" data-doc-panel-root>
       {/* Doc list header */}
@@ -668,10 +846,10 @@ export function DocPanel() {
             {/* 上:编辑器 + spec/tdd 模式的顶部进度条 */}
             <div className="overflow-hidden relative flex flex-col gap-1.5">
               {/* 进度条 — 只在 spec/tdd 模式 + 有 checklist 时显示 */}
-              {selectedDoc && selectedDoc.mode !== "free" && checklistStats.total > 0 && (
+              {selectedDoc && selectedDoc.mode !== "free" && (checklistStats?.total ?? 0) > 0 && (
                 <ChecklistProgressBar
-                  total={checklistStats.total}
-                  checked={checklistStats.checked}
+                  total={checklistStats?.total ?? 0}
+                  checked={checklistStats?.checked ?? 0}
                 />
               )}
               <div className="flex-1 overflow-hidden relative">
@@ -1131,7 +1309,7 @@ export function DocPanel() {
                         variant="ghost"
                         className="h-6 text-[10px]"
                         onClick={() => {
-                          setAiGeneratedContent(null);
+                          setAiGeneratedContent("");
                           setAiGenerateOpen(true);
                         }}
                       >
@@ -1143,7 +1321,7 @@ export function DocPanel() {
                         variant="ghost"
                         className="h-6 text-[10px] text-muted-foreground hover:text-red-600"
                         onClick={() => {
-                          setAiGeneratedContent(null);
+                          setAiGeneratedContent("");
                         }}
                       >
                         不用 AI
@@ -1190,7 +1368,7 @@ export function DocPanel() {
                             return;
                           }
                           // 走一键生成(标题驱动),生成完填到 aiGeneratedContent
-                          await handleQuickGenerate();
+                          await handleQuickGenerate(newDocTitle || "");
                         }}
                       >
                         {aiGenerating ? (

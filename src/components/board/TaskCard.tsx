@@ -1,6 +1,6 @@
-﻿"use client";
+"use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, ListChecks, CornerDownRight, FileText, Eye, Pencil, Trash2 } from "lucide-react";
@@ -92,20 +92,57 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
   // 子任务的负责人表(为了展开时显示)
   const users = useBoardStore((s) => s.users);
 
-  // 关联的文档数(用作卡片上的小徽章 — 轻量提示)
-  const [docCount, setDocCount] = useState(0);
+  // 关联的文档列表(用作卡片上的小徽章 — 点开是下拉跳转)
+  const [linkedDocs, setLinkedDocs] = useState<
+    Array<{ id: string; title: string; mode: DocMode }>
+  >([]);
+  const [docMenuOpen, setDocMenuOpen] = useState(false);
+  const docBadgeRef = useRef<HTMLSpanElement | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/tasks/${task.id}/documents`, { credentials: "include" })
       .then((r) => r.json())
       .then((d) => {
-        if (!cancelled && d.ok) setDocCount(d.links.length);
+        if (!cancelled && d.ok) {
+          setLinkedDocs(
+            (d.links ?? []).map((l: any) => ({
+              id: l.document.id,
+              title: l.document.title,
+              mode: l.document.mode,
+            }))
+          );
+        }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [task.id, task.updatedAt]); // task 变化时刷新
+
+  // 点击外部关闭文档下拉
+  useEffect(() => {
+    if (!docMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (
+        docBadgeRef.current &&
+        !docBadgeRef.current.contains(e.target as Node)
+      ) {
+        setDocMenuOpen(false);
+      }
+    };
+    // 用 mousedown 不影响点菜单项本身的 onClick 触发
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [docMenuOpen]);
+
+  function openDoc(docId: string) {
+    // 派发事件给 Board / DocSidebar / DocPanel — 解耦,不需要 prop 钻
+    setDocMenuOpen(false);
+    window.dispatchEvent(
+      new CustomEvent("kanban:jump-to-doc", { detail: { docId } })
+    );
+  }
 
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
@@ -168,13 +205,47 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
                     子任务
                   </span>
                 )}
-                {docCount > 0 && (
+                {linkedDocs.length > 0 && (
                   <span
-                    className="inline-flex items-center gap-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 text-[9px] font-medium"
-                    title={`关联 ${docCount} 个文档,点任务详情查看`}
+                    ref={docBadgeRef}
+                    className="relative inline-flex items-center gap-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 text-[9px] font-medium cursor-pointer hover:bg-amber-100 transition-colors"
+                    title={`关联 ${linkedDocs.length} 个文档,点开跳转`}
+                    onClick={(e) => {
+                      e.stopPropagation(); // 不触发卡片的 onClick / dnd
+                      setDocMenuOpen((v) => !v);
+                    }}
                   >
                     <FileText className="h-2.5 w-2.5" />
-                    {docCount} 文档
+                    {linkedDocs.length} 文档
+                    {docMenuOpen && (
+                      <div
+                        className="absolute top-full left-0 mt-1 z-50 min-w-[200px] max-w-[300px] rounded-md border bg-popover text-popover-foreground shadow-md p-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="px-2 py-1 text-[9px] text-muted-foreground border-b mb-1">
+                          跳转到文档
+                        </div>
+                        {linkedDocs.map((d) => (
+                          <button
+                            key={d.id}
+                            type="button"
+                            onClick={() => openDoc(d.id)}
+                            className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-[11px] hover:bg-accent hover:text-accent-foreground text-left"
+                          >
+                            <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span className="flex-1 truncate">{d.title}</span>
+                            <span
+                              className={cn(
+                                "shrink-0 text-[9px] px-1 rounded",
+                                DOC_MODE_COLOR[d.mode]
+                              )}
+                            >
+                              {DOC_MODE_LABEL[d.mode]}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </span>
                 )}
               </div>
