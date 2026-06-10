@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -19,6 +19,7 @@ import { BulletList, OrderedList } from "@tiptap/extension-list";
 import { getSocketInstance } from "@/hooks/useSocket";
 import { getYDoc, getAwareness, connectCollaboration } from "@/lib/collaboration";
 import { CustomCursorPlugin } from "@/lib/tiptap-cursor-plugin";
+import { TaskList, TaskItem } from "@/lib/tiptap-task-list";
 import { EditorToolbar } from "./EditorToolbar";
 import { Button } from "@/components/ui/button";
 import type { Awareness } from "y-protocols/awareness";
@@ -30,6 +31,20 @@ interface Props {
   userName: string;
   cursorColor: string;
   onSave: (content: string) => Promise<void>;
+  /** checklist 行数变化时回调(0 ↔ n) */
+  onChecklistChange?: (hasChecklist: boolean) => void;
+}
+
+/** 暴露给父组件的命令式 API(DocPanel 用) */
+export interface CollaborativeEditorHandle {
+  /** 在文档末尾插入一个空 checklist 行(taskList + taskItem) */
+  insertChecklistRow: () => boolean;
+  /** 在光标位置插入文本(用于 AI 生成内容等场景) */
+  insertContent: (text: string) => boolean;
+  /** 是否有 checklist 行(空状态判断用) */
+  hasChecklist: () => boolean;
+  /** 替换整个文档内容(AI 接管场景) */
+  setContent: (text: string) => boolean;
 }
 
 /** 将纯文本转换为 Tiptap JSON（每个段落为一行） */
@@ -139,6 +154,8 @@ const MarkdownOnEnter = Extension.create({
         const bulletListNode = schema.nodes.bulletList;
         const orderedListNode = schema.nodes.orderedList;
         const listItemNode = schema.nodes.listItem;
+        const taskListNode = schema.nodes.taskList;
+        const taskItemNode = schema.nodes.taskItem;
         const horizontalRuleNode = schema.nodes.horizontalRule;
 
         // ── 块级规则 ──
@@ -171,6 +188,29 @@ const MarkdownOnEnter = Extension.create({
           return true;
         }
 
+        // - [ ] / - [x] 任务清单(必放在 ul 规则之前,否则被吞)
+        const tlMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
+        if (tlMatch && taskListNode && taskItemNode) {
+          const done = tlMatch[1] !== " ";
+          const content = tlMatch[2];
+          const from = block.pos;
+          const to = block.pos + node.nodeSize;
+          const tr = state.tr;
+          tr.replaceRangeWith(
+            from,
+            to,
+            taskListNode.create(
+              null,
+              taskItemNode.create(
+                { done, taskId: null },
+                content ? schema.text(content) : null
+              )
+            )
+          );
+          editor.view.dispatch(tr);
+          return true;
+        }
+
         // > 引用块
         const qMatch = trimmed.match(/^>\s+(.*)$/);
         if (qMatch && blockquoteNode) {
@@ -189,7 +229,8 @@ const MarkdownOnEnter = Extension.create({
         }
 
         // - / * 无序列表
-        const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        // 用 (?!\[[ x]\]) 排除 task list 语法,避免 `- [ ] xxx` 被 ul 吞掉
+        const ulMatch = trimmed.match(/^[-*]\s+(?!\[[ x]\])(.*)$/);
         if (ulMatch && bulletListNode && listItemNode) {
           const content = ulMatch[1];
           const from = block.pos;
@@ -270,14 +311,18 @@ function withoutInputRules<T extends Extension>(Ext: any): T {
   return (Ext as any).extend({ addInputRules: () => [] });
 }
 
-export function CollaborativeEditor({
+export const CollaborativeEditor = forwardRef<
+  CollaborativeEditorHandle,
+  Props
+>(function CollaborativeEditor({
   docId,
   initialContent,
   userId,
   userName,
   cursorColor,
   onSave,
-}: Props) {
+  onChecklistChange,
+}, ref) {
   const savedRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   const contentLoadedRef = useRef(false);
@@ -326,8 +371,11 @@ export function CollaborativeEditor({
         autolink: false,
         linkOnPaste: false,
       }),
+      // 任务清单 checklist — 核心扩展:把 `- [ ] xxx` 转成可勾选 / 可关联任务的节点
+      TaskList,
+      TaskItem,
       Placeholder.configure({
-        placeholder: "开始写作… 支持 Markdown 快捷输入",
+        placeholder: "开始写作… 支持 Markdown 快捷输入(回车生效),输入 `- [ ]` 创建任务清单",
       }),
       // Markdown 快捷输入: 按 Enter 时扫描当前段,匹配整段 markdown 则转换
       MarkdownOnEnter,
@@ -409,8 +457,89 @@ export function CollaborativeEditor({
     savedRef.current = true;
   }, [editor, onSave]);
 
+  // 监听文档变化,通知父组件 checklist 状态(用于空状态文案分情况)
+  useEffect(() => {
+    if (!editor || !onChecklistChange) return;
+    const handler = () => {
+      let has = false;
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === "taskList") {
+          has = true;
+          return false;
+        }
+        return true;
+      });
+      onChecklistChange(has);
+    };
+    editor.on("update", handler);
+    // 立即触发一次,把初始 checklist 状态推给父组件
+    handler();
+    return () => {
+      editor.off("update", handler);
+    };
+  }, [editor, onChecklistChange]);
+
+  // 暴露命令式 API 给父组件(DocPanel)用
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertChecklistRow: () => {
+        if (!editor) return false;
+        // 跳到文档末尾,确保插入在最后
+        editor.commands.focus("end");
+        // 插入空 taskList(包含一个空 taskItem)
+        // 用 chain 保证在协作模式下走 ProseMirror 的 transaction,会被 Y.js 捕获
+        return editor
+          .chain()
+          .insertContent({
+            type: "taskList",
+            content: [
+              {
+                type: "taskItem",
+                attrs: { done: false, taskId: null },
+                content: [{ type: "text", text: "" }],
+              },
+            ],
+          })
+          .focus()
+          .run();
+      },
+      insertContent: (text: string) => {
+        if (!editor) return false;
+        editor.commands.focus("end");
+        return editor.chain().insertContent(text).focus().run();
+      },
+      hasChecklist: () => {
+        if (!editor) return false;
+        // 用 ProseMirror 状态查 taskList 节点
+        let found = false;
+        editor.state.doc.descendants((node) => {
+          if (node.type.name === "taskList" || node.type.name === "taskItem") {
+            found = true;
+            return false; // 找到了就停
+          }
+          return true;
+        });
+        return found;
+      },
+      setContent: (text: string) => {
+        if (!editor) return false;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed?.type === "doc") {
+            return editor.commands.setContent(parsed);
+          }
+        } catch {
+          /* not JSON, fall through */
+        }
+        return editor.commands.setContent(textToTiptapJSON(text));
+      },
+    }),
+    [editor]
+  );
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-doc-panel-root>
       <div className="flex-1 overflow-auto border rounded-md flex flex-col">
         <EditorToolbar editor={editor} />
         <EditorContent editor={editor} className="w-full flex-1 p-3" />
@@ -426,4 +555,4 @@ export function CollaborativeEditor({
       </div>
     </div>
   );
-}
+});

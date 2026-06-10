@@ -10,6 +10,8 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 
 export type InterfaceStatus = "draft" | "active" | "deprecated";
 
+export type DocMode = "free" | "spec" | "tdd";
+
 export interface User {
   id: string;
   name: string;
@@ -78,9 +80,18 @@ export interface Document {
   id: string;
   title: string;
   content: string | null;
+  mode: DocMode;
+  specTemplate: string | null;
   createdById: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface DocumentTaskLink {
+  documentId: string;
+  taskId: string;
+  sectionKey: string | null;
+  createdAt: number;
 }
 
 export const STATUSES: readonly Status[] = ["todo", "doing", "review", "done"] as const;
@@ -89,6 +100,55 @@ export const ROLES: readonly Role[] = ["frontend", "backend", "testing"] as cons
 export const TASK_TYPES: readonly TaskType[] = ["feature", "bug", "mock-api", "doc"] as const;
 export const HTTP_METHODS: readonly HttpMethod[] = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 export const INTERFACE_STATUSES: readonly InterfaceStatus[] = ["draft", "active", "deprecated"] as const;
+
+export const DOC_MODES: readonly DocMode[] = ["free", "spec", "tdd"] as const;
+
+export const DOC_MODE_LABEL: Record<DocMode, string> = {
+  free: "自由写作",
+  spec: "Spec 模式",
+  tdd: "TDD 模式",
+};
+
+export const DOC_MODE_COLOR: Record<DocMode, string> = {
+  free: "bg-gray-200 text-gray-700",
+  spec: "bg-blue-100 text-blue-700",
+  tdd: "bg-purple-100 text-purple-700",
+};
+
+/** Spec 模式预置 sections */
+export const SPEC_SECTIONS = [
+  "背景",
+  "目标",
+  "范围",
+  "接口设计",
+  "数据模型",
+  "验收标准",
+] as const;
+
+/** TDD 模式预置 sections */
+export const TDD_SECTIONS = [
+  "🔴 红:失败的测试",
+  "🟢 绿:实现",
+  "🔵 重构:决策记录",
+  "📊 当前进度",
+] as const;
+
+/** 拼出 spec/tdd 模式新建时注入到 Tiptap 的初始内容(纯段落/标题/任务清单) */
+export function buildTemplateContent(mode: DocMode): string {
+  const sections =
+    mode === "spec" ? SPEC_SECTIONS : mode === "tdd" ? TDD_SECTIONS : [];
+  if (sections.length === 0) return "";
+
+  const lines: string[] = [];
+  lines.push(`# ${mode === "spec" ? "Spec 文档" : "TDD 文档"}`);
+  lines.push("");
+  for (const s of sections) {
+    lines.push(`## ${s}`);
+    lines.push("");
+    lines.push("- [ ] ");
+  }
+  return lines.join("\n");
+}
 
 export const STATUS_LABEL: Record<Status, string> = {
   todo: "Todo",

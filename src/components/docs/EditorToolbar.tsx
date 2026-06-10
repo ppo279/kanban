@@ -16,6 +16,7 @@ import {
   Minus,
   Undo2,
   Redo2,
+  ListChecks,
 } from "lucide-react";
 import { cn } from "@/lib/util";
 
@@ -110,6 +111,12 @@ const listButtons: ToolbarButtonDef[] = [
     icon: SquareCode,
     action: (e) => e.chain().focus().toggleCodeBlock().run(),
     isActive: (e) => e.isActive("codeBlock"),
+  },
+  {
+    label: "任务清单",
+    icon: ListChecks,
+    action: (e) => e.chain().focus().toggleTaskList().run(),
+    isActive: (e) => e.isActive("taskList"),
   },
 ];
 

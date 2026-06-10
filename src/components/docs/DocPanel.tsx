@@ -1,22 +1,57 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, FileText, Users } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  FileText,
+  Users,
+  Link2,
+  Unlink,
+  X,
+  ListChecks,
+  PenLine,
+  FileCheck,
+  TestTube2,
+  Sparkles,
+  Key,
+  RefreshCw,
+  Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/util";
 import { useBoardStore } from "@/store/board";
 import { getSocketInstance } from "@/hooks/useSocket";
-import { CollaborativeEditor } from "./CollaborativeEditor";
-import type { Document } from "@/types";
+import { CollaborativeEditor, type CollaborativeEditorHandle } from "./CollaborativeEditor";
+import { AISettingsDialog } from "./AISettingsDialog";
+import { AIGenerateDialog } from "./AIGenerateDialog";
+import { hasAPIKey, getAPIKey, type AIProvider } from "@/lib/ai-keys";
+import {
+  DOC_MODES,
+  DOC_MODE_LABEL,
+  DOC_MODE_COLOR,
+  buildTemplateContent,
+  type DocMode,
+  type Document,
+  type Task,
+  type Priority,
+  PRIORITY_LABEL,
+  PRIORITIES,
+  STATUSES,
+  STATUS_LABEL,
+  type Status,
+} from "@/types";
 
 // ── User colour palette ──
 const CURSOR_COLORS = [
@@ -37,17 +72,163 @@ function getCursorColor(userId: string): string {
   return CURSOR_COLORS[hashUserId(userId) % CURSOR_COLORS.length];
 }
 
+// ── 模式卡片元数据(给"新建文档"弹窗用) ──
+interface ModeCardMeta {
+  mode: DocMode;
+  Icon: React.ElementType;
+  label: string;
+  blurb: string;
+  // 选中态视觉
+  selectedBorder: string;
+  selectedBg: string;
+  iconColor: string;
+  recommendation: string; // 适合什么场景
+}
+
+const MODE_CARDS: ModeCardMeta[] = [
+  {
+    mode: "free",
+    Icon: PenLine,
+    label: "自由写作",
+    blurb: "空白页面,纯 markdown 协作",
+    selectedBorder: "border-slate-400 ring-2 ring-slate-200",
+    selectedBg: "bg-slate-50",
+    iconColor: "text-slate-500",
+    recommendation: "会议纪要、临时记录",
+  },
+  {
+    mode: "spec",
+    Icon: FileCheck,
+    label: "Spec 模式",
+    blurb: "预置 6 个 section 骨架 + checklist",
+    selectedBorder: "border-blue-500 ring-2 ring-blue-200",
+    selectedBg: "bg-blue-50",
+    iconColor: "text-blue-500",
+    recommendation: "产品需求、接口设计",
+  },
+  {
+    mode: "tdd",
+    Icon: TestTube2,
+    label: "TDD 模式",
+    blurb: "红/绿/重构 4 阶段 + checklist",
+    selectedBorder: "border-purple-500 ring-2 ring-purple-200",
+    selectedBg: "bg-purple-50",
+    iconColor: "text-purple-500",
+    recommendation: "测试用例、后端实现",
+  },
+];
+
+// 角色 → 推荐模式
+const ROLE_RECOMMENDATION: Record<string, DocMode> = {
+  frontend: "spec",
+  backend: "tdd",
+  testing: "tdd",
+};
+
+/** 模式预览缩略(灰色 markdown 文本缩略) */
+function ModePreview({ mode }: { mode: DocMode }) {
+  if (mode === "free") {
+    return (
+      <div className="h-[68px] flex items-center justify-center text-[10px] text-muted-foreground italic">
+        空白页,自由发挥
+      </div>
+    );
+  }
+  const sections =
+    mode === "spec"
+      ? ["背景", "目标", "范围", "接口设计", "数据模型", "验收标准"]
+      : ["🔴 红:失败的测试", "🟢 绿:实现", "🔵 重构:决策记录", "📊 当前进度"];
+  return (
+    <div className="h-[68px] overflow-hidden text-[9px] font-mono leading-snug text-slate-500 px-1.5 py-1 space-y-0.5">
+      {sections.map((s) => (
+        <div key={s} className="flex items-center gap-1 truncate">
+          <span className="text-blue-400 shrink-0">##</span>
+          <span className="truncate">{s}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface LinkedTask {
+  documentId: string;
+  taskId: string;
+  sectionKey: string | null;
+  createdAt: number;
+  task: Task;
+}
+
+interface AssociateState {
+  open: boolean;
+  currentTaskId: string | null;
+  position: number | null;
+  // editor 实例从事件里传过来,保存到这里用于创建后写回 taskId attr
+  editor: any | null;
+}
+
 export function DocPanel() {
-  const currentUser = useBoardStore((s) => s.me);
+  const me = useBoardStore((s) => s.me);
+  const users = useBoardStore((s) => s.users);
+  const tasks = useBoardStore((s) => s.tasks);
+
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const [newDocTitle, setNewDocTitle] = useState("");
+  const [newDocMode, setNewDocMode] = useState<DocMode>("spec");
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialContent, setInitialContent] = useState("");
   const [onlineUsers, setOnlineUsers] = useState<{ userId: string; userName: string }[]>([]);
+  const [linkedTasks, setLinkedTasks] = useState<LinkedTask[]>([]);
+  const [modeChanging, setModeChanging] = useState(false);
+
+  const [associateState, setAssociateState] = useState<AssociateState>({
+    open: false,
+    currentTaskId: null,
+    position: null,
+    editor: null,
+  });
+
+  const [createForm, setCreateForm] = useState<{
+    title: string;
+    priority: Priority;
+    status: Status;
+    assigneeId: string;
+  }>({
+    title: "",
+    priority: "med",
+    status: "todo",
+    assigneeId: "",
+  });
+
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  // 指向当前打开的 CollaborativeEditor — 让空状态快捷按钮能调用 insertChecklistRow
+  const editorRef = useRef<CollaborativeEditorHandle | null>(null);
+  // 标记当前文档是否已有 checklist 行(用于空状态文案分情况)
+  // DocPanel 不能直接读 editor state(性能 + 时序问题),用一个乐观标记 + 手动更新
+  const [hasChecklistRows, setHasChecklistRows] = useState(false);
+
+  // ── AI 状态 ──
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [aiGenerateOpen, setAiGenerateOpen] = useState(false); // "高级"详细需求入口
+  const [aiGeneratedContent, setAiGeneratedContent] = useState<string | null>(null);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiLastProvider, setAiLastProvider] = useState<AIProvider | null>(null);
+  // 当前选中的 provider(用于"AI 生成"主按钮 / AIGenerateDialog 默认值)
+  // null = 还没决定(交给下面的 effect 根据已配 key 推断)
+  const [aiProvider, setAiProvider] = useState<AIProvider | null>(null);
+  // key 配置变化时让 UI 重渲染 — AISettingsDialog 配置完后通过 onConfigured 通知
+  const [aiKeysTick, setAiKeysTick] = useState(0);
+
+  // 初始化 / 重新选 aiProvider:优先选已配 key 的,都没配就默认 minimax
+  useEffect(() => {
+    if (hasAPIKey("minimax")) setAiProvider("minimax");
+    else if (hasAPIKey("deepseek")) setAiProvider("deepseek");
+    else setAiProvider("minimax"); // 都没配时给个默认值,UI 上会引导去配 key
+  }, [aiKeysTick]);
 
   // ── Load doc list ──
   const loadDocuments = useCallback(async () => {
@@ -60,6 +241,19 @@ export function DocPanel() {
 
   useEffect(() => { loadDocuments(); }, [loadDocuments]);
 
+  // ── Load linked tasks when a doc is opened ──
+  const loadLinkedTasks = useCallback(async (docId: string) => {
+    try {
+      const r = await fetch(`/api/documents/${docId}/tasks`, {
+        credentials: "include",
+      });
+      const data = await r.json();
+      if (data.ok) setLinkedTasks(data.links);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   // ── Socket events for users list ──
   useEffect(() => {
     const socket = getSocketInstance();
@@ -70,7 +264,7 @@ export function DocPanel() {
       return;
     }
 
-    const myId = currentUser?.id ?? "anonymous";
+    const myId = me?.id ?? "anonymous";
 
     const onDocUsers = (users: { userId: string; userName: string }[]) => {
       setOnlineUsers(users.filter((u) => u.userId !== myId));
@@ -81,7 +275,38 @@ export function DocPanel() {
     return () => {
       socket.off("doc:users", onDocUsers);
     };
-  }, [selectedDoc?.id, currentUser]);
+  }, [selectedDoc?.id, me]);
+
+  // ── 监听 checklist 行的"关联任务"事件(TaskItemView 通过冒泡触发) ──
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{
+        currentTaskId: string | null;
+        editor: any;
+        position?: number;
+      }>;
+      const pos =
+        typeof ce.detail.position === "number" ? ce.detail.position : null;
+      setAssociateState({
+        open: true,
+        currentTaskId: ce.detail.currentTaskId,
+        position: pos,
+        editor: ce.detail.editor,
+      });
+      // 预填标题
+      setCreateForm((f) => ({
+        ...f,
+        title: "",
+        assigneeId: me?.id ?? "",
+      }));
+    };
+
+    root.addEventListener("checklist:associate-task", handler);
+    return () => root.removeEventListener("checklist:associate-task", handler);
+  }, [me]);
 
   // ── Open document dialog ──
   async function handleSelectDoc(doc: Document) {
@@ -90,6 +315,7 @@ export function DocPanel() {
     setLoading(true);
     setDialogOpen(true);
     setInitialContent("");
+    setHasChecklistRows(false); // 乐观重置,CollaborativeEditor mount 后会通过 onChecklistChange 回调更新
 
     try {
       const r = await fetch(`/api/documents/${doc.id}`, { credentials: "include" });
@@ -99,7 +325,20 @@ export function DocPanel() {
       }
     } catch { /* ignore */ }
 
+    // 拉关联任务
+    loadLinkedTasks(doc.id);
     setLoading(false);
+  }
+
+  // ── 快捷:在编辑器末尾插入一个空 checklist 行 ──
+  function handleInsertChecklist() {
+    const ok = editorRef.current?.insertChecklistRow();
+    if (ok) {
+      setHasChecklistRows(true);
+      toast.success("已添加 checklist 行");
+    } else {
+      toast.error("编辑器尚未就绪,请稍后再试");
+    }
   }
 
   // ── Save document ──
@@ -128,33 +367,115 @@ export function DocPanel() {
     }
   }
 
-  // ── Create document ──
+  // ── Create document (with mode) — 通过模态弹窗触发 ──
   async function handleCreateDoc() {
     if (!newDocTitle.trim()) {
-      toast.error("标题不能为空");
-      return;
+      return; // dialog 上按钮已经 disabled,这里兜底
     }
     try {
+      // 优先用 AI 生成的内容;否则 spec/tdd 模式注入 section 骨架;free 模式空
+      const initialContent =
+        aiGeneratedContent ??
+        (newDocMode === "free" ? "" : buildTemplateContent(newDocMode));
       const r = await fetch("/api/documents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ title: newDocTitle.trim(), content: "" }),
+        body: JSON.stringify({
+          title: newDocTitle.trim(),
+          content: initialContent,
+          mode: newDocMode,
+        }),
       });
       const data = await r.json();
       if (data.ok) {
         setDocuments((prev) => [...prev, data.document]);
         setNewDocTitle("");
-        toast.success("文档已创建");
+        setNewDocMode("spec"); // 默认模式恢复 spec
+        setAiGeneratedContent(null);
+        setCreateDialogOpen(false);
+        toast.success(
+          aiGeneratedContent
+            ? `已创建,AI 生成内容已填充`
+            : newDocMode === "free"
+            ? "文档已创建"
+            : `${DOC_MODE_LABEL[newDocMode]}文档已创建,已预置 section 骨架`
+        );
       }
     } catch {
       toast.error("创建失败");
     }
   }
 
+  // 用户切 mode 时,如果之前 AI 生成的内容用的不是新 mode,清掉避免冲突
+  function handleChangeMode(m: DocMode) {
+    if (m !== newDocMode && aiGeneratedContent) {
+      setAiGeneratedContent(null);
+      toast.info("切换模式后,已清空之前 AI 生成的内容");
+    }
+    setNewDocMode(m);
+  }
+
+  // ── 一键 AI 生成(主操作):用当前标题直接生成,prompt 为空,走"标题驱动"模式 ──
+  async function handleQuickGenerate() {
+    if (!newDocTitle.trim()) {
+      toast.error("请先填标题");
+      return;
+    }
+    if (newDocMode === "free") {
+      toast.error("自由写作模式不支持 AI 生成");
+      return;
+    }
+    // 自动选已配的 provider
+    const provider: AIProvider | null = hasAPIKey("minimax")
+      ? "minimax"
+      : hasAPIKey("deepseek")
+      ? "deepseek"
+      : null;
+    if (!provider) {
+      toast.info("还没配 API key,先去配置");
+      setAiSettingsOpen(true);
+      return;
+    }
+
+    setAiGenerating(true);
+    try {
+      const apiKey = await getAPIKey(provider);
+      if (!apiKey) {
+        toast.error("Key 读取失败,请重新配");
+        setAiSettingsOpen(true);
+        return;
+      }
+      const r = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          provider,
+          apiKey,
+          title: newDocTitle.trim(),
+          prompt: "", // 标题驱动 — prompt 为空,完全靠标题推断
+          mode: newDocMode,
+        }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        toast.error(data.error ?? "生成失败");
+        return;
+      }
+      setAiGeneratedContent(data.content);
+      setAiLastProvider(provider);
+      toast.success(`已生成 ${data.content.length} 字 · ${provider === "minimax" ? "MiniMax" : "DeepSeek"}`);
+    } catch (e: any) {
+      toast.error(`生成失败:${e?.message ?? e}`);
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
   // ── Delete document ──
   async function handleDeleteDoc(id: string) {
-    if (!confirm("确定删除此文档？")) return;
+    if (!confirm("确定删除此文档？关联任务不会被删除。")) return;
     try {
       const r = await fetch(`/api/documents/${id}`, {
         method: "DELETE",
@@ -174,8 +495,141 @@ export function DocPanel() {
     }
   }
 
+  // ── Switch document mode (历史文档不强制升级,允许手动切) ──
+  async function handleSwitchMode(targetMode: DocMode) {
+    if (!selectedDoc || selectedDoc.mode === targetMode) return;
+    setModeChanging(true);
+    try {
+      const r = await fetch(`/api/documents/${selectedDoc.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ mode: targetMode }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setSelectedDoc(data.document);
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === data.document.id ? data.document : d))
+        );
+        toast.success(
+          targetMode === "free"
+            ? "已切换为自由写作模式"
+            : `已切换为${DOC_MODE_LABEL[targetMode]},可在编辑器中手动添加 section 骨架`
+        );
+      }
+    } catch {
+      toast.error("切换失败");
+    } finally {
+      setModeChanging(false);
+    }
+  }
+
+  // ── Unlink task from document ──
+  async function handleUnlinkTask(taskId: string) {
+    if (!selectedDoc) return;
+    try {
+      const r = await fetch(
+        `/api/document-tasks?docId=${selectedDoc.id}&taskId=${taskId}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      const data = await r.json();
+      if (data.ok) {
+        setLinkedTasks((prev) => prev.filter((l) => l.taskId !== taskId));
+        toast.success("已解除关联");
+      }
+    } catch {
+      toast.error("解除失败");
+    }
+  }
+
+  // ── 一键 checklist → task ──
+  async function handleAssociateSubmit() {
+    const title = createForm.title.trim();
+    if (!title) {
+      toast.error("请输入任务标题");
+      return;
+    }
+    if (!selectedDoc) return;
+
+    try {
+      // 1) 创建 task
+      const cr = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title,
+          priority: createForm.priority,
+          status: createForm.status,
+          type: "doc",
+          assigneeId: createForm.assigneeId || me?.id || "",
+        }),
+      });
+      const cdata = await cr.json();
+      if (!cdata.ok) {
+        toast.error(cdata.error ?? "创建任务失败");
+        return;
+      }
+      const newTask: Task = cdata.task;
+
+      // 2) 关联
+      const lr = await fetch("/api/document-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          documentId: selectedDoc.id,
+          taskId: newTask.id,
+          sectionKey: null,
+        }),
+      });
+      const ldata = await lr.json();
+      if (!ldata.ok) {
+        toast.error(ldata.error ?? "关联失败");
+        return;
+      }
+
+      // 3) 写回 taskId 到 Tiptap 节点 attr
+      if (
+        associateState.editor &&
+        typeof associateState.position === "number"
+      ) {
+        try {
+          associateState.editor.commands.setNodeMarkup(
+            associateState.position,
+            undefined,
+            { taskId: newTask.id }
+          );
+        } catch (err) {
+          // 写回失败不阻塞主流程,关联已建立
+          console.warn("[associate] writeback attr failed", err);
+        }
+      }
+
+      // 4) 重新拉关联列表
+      loadLinkedTasks(selectedDoc.id);
+
+      toast.success(`任务 ${newTask.id} 已创建并关联`);
+      setAssociateState({
+        open: false,
+        currentTaskId: null,
+        position: null,
+        editor: null,
+      });
+    } catch (e: any) {
+      toast.error(`失败: ${e.message}`);
+    }
+  }
+
+  // 取最新 task 数据(从 store,反映 socket 推送的状态)
+  function resolveTask(linked: LinkedTask): Task {
+    const fresh = tasks.find((t) => t.id === linked.taskId);
+    return fresh ?? linked.task;
+  }
+
   return (
-    <div className="flex flex-col h-full">
+    <div ref={rootRef} className="flex flex-col h-full" data-doc-panel-root>
       {/* Doc list header */}
       <div className="p-3 space-y-1 border-b">
         <div className="flex items-center justify-between mb-2">
@@ -189,21 +643,21 @@ export function DocPanel() {
             </span>
           )}
         </div>
-        <div className="flex gap-1 mb-2">
-          <Input
-            value={newDocTitle}
-            onChange={(e) => setNewDocTitle(e.target.value)}
-            placeholder="新文档标题"
-            className="h-7 text-xs"
-            onKeyDown={(e) => e.key === "Enter" && handleCreateDoc()}
-          />
-          <Button size="sm" className="h-7 px-2 text-xs" onClick={handleCreateDoc}>
-            <Plus className="h-3 w-3 mr-1" />
-            新建
-          </Button>
-        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs w-full"
+          onClick={() => {
+            setNewDocMode("free");
+            setNewDocTitle("");
+            setCreateDialogOpen(true);
+          }}
+        >
+          <Plus className="h-3.5 w-3.5 mr-1" />
+          新建文档
+        </Button>
 
-        <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+        <div className="space-y-0.5 max-h-[260px] overflow-y-auto mt-2">
           {documents.map((doc) => (
             <div
               key={doc.id}
@@ -217,6 +671,14 @@ export function DocPanel() {
             >
               <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
               <span className="flex-1 truncate">{doc.title}</span>
+              <span
+                className={cn(
+                  "text-[9px] px-1 rounded font-medium",
+                  DOC_MODE_COLOR[doc.mode]
+                )}
+              >
+                {DOC_MODE_LABEL[doc.mode]}
+              </span>
               {selectedDoc?.id === doc.id && onlineUsers.length > 0 && (
                 <span className="flex -space-x-1">
                   {onlineUsers.slice(0, 3).map((u, i) => (
@@ -253,22 +715,49 @@ export function DocPanel() {
 
       {/* Empty state */}
       {!selectedDoc && (
-        <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+        <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground p-4 text-center">
           选择或创建一个文档开始编辑
         </div>
       )}
 
-      {/* ── Editing Dialog ── */}
+      {/* ── Editing Dialog (双栏) ── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+        <DialogContent className="max-w-5xl max-h-[90vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+            <DialogTitle className="flex items-center gap-2 flex-wrap">
               <Input
                 value={editingTitle}
                 onChange={(e) => setEditingTitle(e.target.value)}
-                className="h-7 text-sm font-semibold border-0 focus-visible:ring-0 px-0"
+                className="h-7 text-sm font-semibold border-0 focus-visible:ring-0 px-0 flex-1 min-w-[200px]"
                 placeholder="文档标题"
               />
+              {selectedDoc && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <span
+                    className={cn(
+                      "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                      DOC_MODE_COLOR[selectedDoc.mode]
+                    )}
+                  >
+                    {DOC_MODE_LABEL[selectedDoc.mode]}
+                  </span>
+                  <select
+                    value={selectedDoc.mode}
+                    onChange={(e) =>
+                      handleSwitchMode(e.target.value as DocMode)
+                    }
+                    disabled={modeChanging}
+                    className="h-6 text-[10px] rounded border px-1"
+                    title="切换文档模式"
+                  >
+                    {DOC_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {DOC_MODE_LABEL[m]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
                 <Users className="h-3 w-3" />
                 {onlineUsers.length + 1}
@@ -289,23 +778,130 @@ export function DocPanel() {
             )}
           </DialogHeader>
 
-          {/* Editor */}
-          <div className="flex-1 min-h-0 relative overflow-auto">
-            {loading ? (
-              <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-                加载中…
+          {/* 主区:上 编辑器 / 下 关联任务 */}
+          <div className="flex-1 min-h-0 grid grid-rows-[1fr_auto] gap-2 overflow-hidden">
+            {/* 上:编辑器 */}
+            <div className="overflow-hidden relative">
+              {loading ? (
+                <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+                  加载中…
+                </div>
+              ) : selectedDoc && me ? (
+                <CollaborativeEditor
+                  key={selectedDoc.id}
+                  ref={editorRef}
+                  docId={selectedDoc.id}
+                  initialContent={initialContent}
+                  userId={me.id}
+                  userName={me.name}
+                  cursorColor={getCursorColor(me.id)}
+                  onSave={handleSaveDoc}
+                  onChecklistChange={setHasChecklistRows}
+                />
+              ) : null}
+            </div>
+
+            {/* 下:关联任务面板 */}
+            <div className="border rounded-md bg-slate-50/50 max-h-[180px] overflow-y-auto">
+              <div className="flex items-center justify-between px-2 py-1.5 border-b bg-white sticky top-0 z-10">
+                <div className="flex items-center gap-1 text-xs font-semibold text-muted-foreground">
+                  <ListChecks className="h-3.5 w-3.5" />
+                  关联任务
+                  <span className="text-[10px] text-muted-foreground">
+                    ({linkedTasks.length})
+                  </span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  {hasChecklistRows
+                    ? "hover checklist 行,点 + 任务 一键转任务"
+                    : "先在编辑器里加 checklist 行,再转任务"}
+                </span>
               </div>
-            ) : selectedDoc && currentUser ? (
-              <CollaborativeEditor
-                key={selectedDoc.id}
-                docId={selectedDoc.id}
-                initialContent={initialContent}
-                userId={currentUser.id}
-                userName={currentUser.name}
-                cursorColor={getCursorColor(currentUser.id)}
-                onSave={handleSaveDoc}
-              />
-            ) : null}
+              {linkedTasks.length === 0 ? (
+                <div className="px-3 py-3 text-[11px] text-muted-foreground text-center space-y-2">
+                  {hasChecklistRows ? (
+                    <>
+                      <p>暂无关联任务</p>
+                      <p className="text-[10px] text-muted-foreground/80">
+                        提示:hover 编辑器里的 checklist 行,点右侧出现的
+                        <span className="font-mono mx-1 px-1 rounded bg-slate-200 text-slate-700">+ 任务</span>
+                        按钮
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>暂无关联任务</p>
+                      <p className="text-[10px] text-muted-foreground/80">
+                        步骤 1:在编辑器里加一行 checklist(输入
+                        <span className="font-mono mx-1 px-1 rounded bg-slate-200 text-slate-700">- [ ]</span>
+                        + 内容按回车,或点下方按钮)
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs mx-auto"
+                        onClick={handleInsertChecklist}
+                      >
+                        <Plus className="h-3 w-3 mr-1" />
+                        帮我插入一行 checklist
+                      </Button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {linkedTasks.map((link) => {
+                    const t = resolveTask(link);
+                    const assignee = users.find((u) => u.id === t.assigneeId);
+                    return (
+                      <div
+                        key={link.taskId}
+                        className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-white group"
+                      >
+                        <span
+                          className={cn(
+                            "shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold text-white",
+                            t.status === "todo" && "bg-slate-400",
+                            t.status === "doing" && "bg-amber-500",
+                            t.status === "review" && "bg-blue-500",
+                            t.status === "done" && "bg-emerald-500"
+                          )}
+                        >
+                          {STATUS_LABEL[t.status]}
+                        </span>
+                        <span className="flex-1 truncate font-medium">
+                          {t.title}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">
+                          {assignee?.name ?? "—"}
+                        </span>
+                        <span
+                          className={cn(
+                            "shrink-0 text-[9px] px-1 rounded",
+                            t.priority === "high" &&
+                              "bg-rose-100 text-rose-700",
+                            t.priority === "med" &&
+                              "bg-amber-100 text-amber-700",
+                            t.priority === "low" &&
+                              "bg-emerald-100 text-emerald-700"
+                          )}
+                        >
+                          {PRIORITY_LABEL[t.priority]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleUnlinkTask(link.taskId)}
+                          className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-red-500 transition-opacity"
+                          title="解除关联(不删除任务)"
+                        >
+                          <Unlink className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           <DialogFooter className="flex items-center justify-between sm:justify-between mt-2">
@@ -327,6 +923,400 @@ export function DocPanel() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── 一键创建任务 dialog(checklist 行触发) ── */}
+      <Dialog
+        open={associateState.open}
+        onOpenChange={(o) =>
+          setAssociateState((s) => ({ ...s, open: o }))
+        }
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Link2 className="h-4 w-4" />
+              创建任务并关联到 checklist 行
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-xs">任务标题</Label>
+              <Input
+                value={createForm.title}
+                onChange={(e) =>
+                  setCreateForm((f) => ({ ...f, title: e.target.value }))
+                }
+                placeholder="例如:实现 /users 列表接口"
+                className="h-8 text-xs"
+                autoFocus
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">负责人</Label>
+                <select
+                  value={createForm.assigneeId}
+                  onChange={(e) =>
+                    setCreateForm((f) => ({
+                      ...f,
+                      assigneeId: e.target.value,
+                    }))
+                  }
+                  className="flex h-8 w-full rounded-md border px-2 text-xs"
+                >
+                  <option value="">未分配</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">优先级</Label>
+                <select
+                  value={createForm.priority}
+                  onChange={(e) =>
+                    setCreateForm((f) => ({
+                      ...f,
+                      priority: e.target.value as Priority,
+                    }))
+                  }
+                  className="flex h-8 w-full rounded-md border px-2 text-xs"
+                >
+                  {PRIORITIES.map((p) => (
+                    <option key={p} value={p}>
+                      {PRIORITY_LABEL[p]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">初始状态</Label>
+              <select
+                value={createForm.status}
+                onChange={(e) =>
+                  setCreateForm((f) => ({
+                    ...f,
+                    status: e.target.value as Status,
+                  }))
+                }
+                className="flex h-8 w-full rounded-md border px-2 text-xs"
+              >
+                {STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {STATUS_LABEL[s]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              创建后会自动出现在下方"关联任务"列表,队友也能在主看板上看到。
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setAssociateState((s) => ({ ...s, open: false }))
+              }
+            >
+              取消
+            </Button>
+            <Button size="sm" onClick={handleAssociateSubmit}>
+              <Plus className="h-3 w-3 mr-1" />
+              创建并关联
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 新建文档弹窗(模式卡片 + 实时预览) ── */}
+      <Dialog
+        open={createDialogOpen}
+        onOpenChange={(o) => {
+          setCreateDialogOpen(o);
+          if (!o) {
+            // 关闭时清空,下次打开重置
+            setNewDocTitle("");
+            setNewDocMode("free");
+          }
+        }}
+      >
+        <DialogContent
+          className="max-w-2xl"
+          onOpenAutoFocus={(e) => {
+            // 让我们的 input 自己抢焦点(避开 Radix 默认行为)
+            e.preventDefault();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-amber-500" />
+              新建文档
+            </DialogTitle>
+            <DialogDescription>
+              选一个模式建出合适的骨架,后续可在文档内随时切换。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* 标题输入 */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">文档标题</Label>
+              <Input
+                value={newDocTitle}
+                onChange={(e) => setNewDocTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newDocTitle.trim()) {
+                    e.preventDefault();
+                    handleCreateDoc();
+                  }
+                }}
+                placeholder="例:用户列表接口设计 / Q3 看板迭代规划"
+                className="h-9 text-sm"
+                autoFocus
+              />
+            </div>
+
+            {/* 模式卡片 */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-medium">选择模式</Label>
+                {me && ROLE_RECOMMENDATION[me.role] && (
+                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <Sparkles className="h-3 w-3 text-amber-500" />
+                    根据你的角色推荐:
+                    <button
+                      type="button"
+                      className="text-blue-600 hover:underline"
+                      onClick={() =>
+                        handleChangeMode(ROLE_RECOMMENDATION[me.role])
+                      }
+                    >
+                      {DOC_MODE_LABEL[ROLE_RECOMMENDATION[me.role]]}
+                    </button>
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {MODE_CARDS.map(({ mode, Icon, label, blurb, selectedBorder, selectedBg, iconColor, recommendation }) => {
+                  const isSelected = newDocMode === mode;
+                  const isRecommended =
+                    me && ROLE_RECOMMENDATION[me.role] === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => handleChangeMode(mode)}
+                      className={cn(
+                        "relative flex flex-col text-left rounded-lg border-2 p-2.5 transition-all",
+                        "hover:shadow-sm hover:border-slate-300",
+                        isSelected
+                          ? `${selectedBorder} ${selectedBg}`
+                          : "border-slate-200 bg-white"
+                      )}
+                    >
+                      {isRecommended && (
+                        <span className="absolute -top-1.5 -right-1.5 inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                          <Sparkles className="h-2.5 w-2.5" />
+                          推荐
+                        </span>
+                      )}
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Icon className={cn("h-4 w-4", iconColor)} />
+                        <span className="text-xs font-semibold">{label}</span>
+                        {isSelected && (
+                          <span className="ml-auto inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500 text-white text-[8px]">
+                            ✓
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground leading-snug mb-1.5">
+                        {blurb}
+                      </p>
+                      <ModePreview mode={mode} />
+                      <div className="mt-1 text-[9px] text-muted-foreground/80 italic">
+                        {recommendation}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* AI 区域 — 只在 spec/tdd 模式显示 */}
+            {newDocMode !== "free" && (
+              <div className="rounded-md border border-amber-200 bg-amber-50/50 p-2.5 space-y-2">
+                {aiGeneratedContent ? (
+                  // 已生成:显示状态
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs text-amber-900">
+                      <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                      <span className="font-medium">
+                        AI 已生成 {aiGeneratedContent.length} 字内容
+                      </span>
+                      <span className="text-[10px] text-amber-700/80">
+                        创建时会自动填充到编辑器
+                      </span>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-[10px]"
+                        onClick={() => {
+                          setAiGeneratedContent(null);
+                          setAiGenerateOpen(true);
+                        }}
+                      >
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                        重新生成
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-[10px] text-muted-foreground hover:text-red-600"
+                        onClick={() => {
+                          setAiGeneratedContent(null);
+                        }}
+                      >
+                        不用 AI
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  // 未生成:提供入口
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs text-amber-900">
+                      <div className="font-medium flex items-center gap-1">
+                        <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                        用 AI 帮你写一版骨架?
+                      </div>
+                      <div className="text-[10px] text-amber-700/80 mt-0.5">
+                        根据标题 + 你写的需求,自动产出 {DOC_MODE_LABEL[newDocMode]} 模板
+                      </div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs border-amber-300"
+                        onClick={() => setAiSettingsOpen(true)}
+                      >
+                        <Key className="h-3 w-3 mr-1" />
+                        设置 key
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs bg-amber-500 hover:bg-amber-600"
+                        disabled={aiGenerating}
+                        onClick={async () => {
+                          // 标题驱动:填了标题就直接生成,prompt 为空,完全靠标题推断
+                          // 没填标题:打开高级 dialog 让用户写需求
+                          if (!newDocTitle.trim()) {
+                            toast.error("请先填标题");
+                            return;
+                          }
+                          // 没配任何 key → 引导去设置
+                          if (!hasAPIKey("minimax") && !hasAPIKey("deepseek")) {
+                            setAiSettingsOpen(true);
+                            toast.info("请先配置 API key");
+                            return;
+                          }
+                          // 走一键生成(标题驱动),生成完填到 aiGeneratedContent
+                          await handleQuickGenerate();
+                        }}
+                      >
+                        {aiGenerating ? (
+                          <>
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            生成中…
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-3 w-3 mr-1" />
+                            AI 生成
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-[10px] text-amber-700 hover:text-amber-900"
+                        onClick={() => {
+                          // 高级模式:打开 prompt dialog 让用户写详细需求
+                          if (!hasAPIKey("minimax") && !hasAPIKey("deepseek")) {
+                            setAiSettingsOpen(true);
+                            toast.info("请先配置 API key");
+                            return;
+                          }
+                          setAiGenerateOpen(true);
+                        }}
+                        title="打开高级模式:可写详细需求、选模型"
+                      >
+                        高级
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCreateDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              size="sm"
+              disabled={!newDocTitle.trim() || aiGenerating}
+              onClick={handleCreateDoc}
+            >
+              {aiGenerating ? (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              ) : (
+                <Plus className="h-3 w-3 mr-1" />
+              )}
+              创建
+              {newDocMode !== "free" && (
+                <span className="ml-1 text-[10px] opacity-80">
+                  · {DOC_MODE_LABEL[newDocMode]}
+                </span>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── AI 设置 dialog(API key 配置) ── */}
+      <AISettingsDialog
+        open={aiSettingsOpen}
+        onOpenChange={setAiSettingsOpen}
+        onConfigured={() => setAiKeysTick((t) => t + 1)}
+      />
+
+      {/* ── AI 生成 dialog ── */}
+      <AIGenerateDialog
+        open={aiGenerateOpen}
+        onOpenChange={setAiGenerateOpen}
+        mode={newDocMode}
+        title={newDocTitle}
+        onGenerated={(content, provider) => {
+          setAiGeneratedContent(content);
+          setAiProvider(provider);
+        }}
+        onRequestKeySetup={() => {
+          setAiGenerateOpen(false);
+          setAiSettingsOpen(true);
+        }}
+      />
     </div>
   );
 }

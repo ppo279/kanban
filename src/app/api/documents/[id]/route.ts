@@ -7,6 +7,8 @@ import { getUserFromCookie } from "@/lib/auth";
 const PatchBody = z.object({
   title: z.string().min(1).max(200).optional(),
   content: z.string().max(100000).nullable().optional(),
+  mode: z.enum(["free", "spec", "tdd"]).optional(),
+  specTemplate: z.string().max(20000).nullable().optional(),
 });
 
 export async function GET(

@@ -101,6 +101,10 @@ export const documents = sqliteTable("documents", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   content: text("content"),
+  mode: text("mode", { enum: ["free", "spec", "tdd"] })
+    .notNull()
+    .default("free"),
+  specTemplate: text("spec_template"),
   createdById: text("created_by_id")
     .notNull()
     .references(() => users.id),
@@ -112,9 +116,23 @@ export const documents = sqliteTable("documents", {
     .default(sql`(unixepoch() * 1000)`),
 });
 
+export const documentTasks = sqliteTable("document_tasks", {
+  documentId: text("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id, { onDelete: "cascade" }),
+  sectionKey: text("section_key"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
 export type DbUser = typeof users.$inferSelect;
 export type DbTask = typeof tasks.$inferSelect;
 export type DbSession = typeof sessions.$inferSelect;
 export type DbApiModule = typeof apiModules.$inferSelect;
 export type DbApiInterface = typeof apiInterfaces.$inferSelect;
 export type DbDocument = typeof documents.$inferSelect;
+export type DbDocumentTask = typeof documentTasks.$inferSelect;

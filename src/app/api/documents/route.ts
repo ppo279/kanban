@@ -23,9 +23,13 @@ export async function GET() {
   });
 }
 
+
+
 const CreateBody = z.object({
   title: z.string().min(1).max(200),
   content: z.string().max(100000).nullable().optional(),
+  mode: z.enum(["free", "spec", "tdd"]).optional(),
+  specTemplate: z.string().max(20000).nullable().optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -48,6 +52,8 @@ export async function POST(req: NextRequest) {
     id: nanoid(12),
     title: parsed.data.title,
     content: parsed.data.content ?? "",
+    mode: parsed.data.mode ?? "free",
+    specTemplate: parsed.data.specTemplate ?? null,
     createdById: user.id,
     createdAt: new Date(now),
     updatedAt: new Date(now),

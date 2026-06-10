@@ -84,10 +84,23 @@ export async function runMigrations() {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       content TEXT,
+      mode TEXT NOT NULL DEFAULT 'free',
+      spec_template TEXT,
       created_by_id TEXT NOT NULL REFERENCES users(id),
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
+
+    CREATE TABLE IF NOT EXISTS document_tasks (
+      document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      section_key TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      PRIMARY KEY (document_id, task_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS document_tasks_doc ON document_tasks(document_id);
+    CREATE INDEX IF NOT EXISTS document_tasks_task ON document_tasks(task_id);
   `);
 
   // 迁移：给 tasks 表添加 type 列（如果不存在）
@@ -105,6 +118,10 @@ export async function runMigrations() {
 
   // 迁移：给 api_modules 表添加 response_wrapper 列
   try { sqlite.exec(`ALTER TABLE api_modules ADD COLUMN response_wrapper TEXT`); } catch {}
+
+  // 迁移：给 documents 表加 mode/spec_template 列
+  try { sqlite.exec(`ALTER TABLE documents ADD COLUMN mode TEXT NOT NULL DEFAULT 'free'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE documents ADD COLUMN spec_template TEXT`); } catch {}
 
   sqlite.close();
   console.log("[migrate] schema ready at", dbPath);
