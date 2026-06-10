@@ -309,6 +309,31 @@ export function DocPanel() {
     window.addEventListener("kanban:open-doc", onOpen);
     return () => window.removeEventListener("kanban:open-doc", onOpen);
   }, [selectedDoc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 监听 TaskItemView 派发的 checklist:associate-task 事件
+  // (编辑器内 hover checklist 行 → 点 + 任务 按钮 → 打开关联 dialog)
+  // 之前漏接:按钮派了事件,没人监听 → dialog 永远打不开
+  useEffect(() => {
+    const onAssociate = (e: Event) => {
+      const ce = e as CustomEvent<{
+        currentTaskId: string | null;
+        editor: any;
+        position: number | null;
+      }>;
+      if (!ce.detail) return;
+      // 文档没打开时不响应(避免幽灵 dialog)
+      if (!dialogOpen) return;
+      setAssociateState({
+        open: true,
+        currentTaskId: ce.detail.currentTaskId,
+        position: ce.detail.position,
+        editor: ce.detail.editor,
+      });
+    };
+    window.addEventListener("checklist:associate-task", onAssociate);
+    return () =>
+      window.removeEventListener("checklist:associate-task", onAssociate);
+  }, [dialogOpen]);
   // 标记当前文档是否已有 checklist 行(用于空状态文案分情况)
   // DocPanel 不能直接读 editor state(性能 + 时序问题),用一个乐观标记 + 手动更新
   const [hasChecklistRows, setHasChecklistRows] = useState(false);
@@ -397,8 +422,14 @@ export function DocPanel() {
     }
   }
 
-  // 切模式(switch dropdown 的别名)— SpecInterfaceEditor 触发
+  // 切模式(兼容两处调用点)
+  //  - 新建文档弹窗:selectedDoc 为空,只更新 newDocMode 本地 state
+  //  - 编辑器内模式切换(SpecInterfaceEditor 触发):有 selectedDoc,调 PATCH 接口
   function handleChangeMode(mode: DocMode) {
+    if (!selectedDoc) {
+      setNewDocMode(mode);
+      return;
+    }
     handleSwitchMode(mode);
   }
 
@@ -409,6 +440,12 @@ export function DocPanel() {
       return;
     }
     try {
+      // spec/tdd 模式要注入骨架(标题 + 各 section + 空 checklist 行)
+      // free 模式直接空字符串 — 用户自由写
+      const content =
+        newDocMode === "free"
+          ? ""
+          : buildTemplateContent(newDocMode);
       const r = await fetch("/api/documents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -416,6 +453,7 @@ export function DocPanel() {
         body: JSON.stringify({
           title: newDocTitle.trim(),
           mode: newDocMode,
+          content,
         }),
       });
       const data = await r.json();
@@ -489,20 +527,23 @@ export function DocPanel() {
       const data = await r.json();
       if (data.ok) {
         setAiGeneratedContent(data.content ?? "");
+        // 成功路径关 dialog — 注释之前说"成功后关",代码漏写
+        setAiGenerateOpen(false);
+        toast.success("已生成,可点击「应用到编辑器」");
       } else {
+        // 失败留 dialog 让用户改 prompt 重试
         toast.error(data.error ?? "生成失败");
       }
     } catch (e: any) {
       toast.error(`生成失败: ${e?.message ?? e}`);
     } finally {
-      setAIGeneratingSafe();
+      setAiGenerating(false);
     }
   }
 
-  // 安全 setState:避免 finally 在 unmount 后调用报错
-  function setAIGeneratingSafe() {
-    if (typeof window !== "undefined") setAiGenerating(false);
-  }
+  // setAIGeneratingSafe 已删除 — 直接 setAiGenerating(false) 即可
+  // 之前用 typeof window !== "undefined" 包了一层,但 React 的 setState 在 unmount 后
+  // 会自动 noop,不会报错。简化掉。
 
   function handleOpenImport() {
     if (!selectedDoc) return;
@@ -696,7 +737,9 @@ export function DocPanel() {
           variant="outline"
           className="h-8 text-xs w-full"
           onClick={() => {
-            setNewDocMode("free");
+            // 按角色推荐默认模式,没匹配上就保持上次的(初次为 spec)
+            const recommended = me && ROLE_RECOMMENDATION[me.role];
+            if (recommended) setNewDocMode(recommended);
             setNewDocTitle("");
             setCreateDialogOpen(true);
           }}
@@ -1068,9 +1111,24 @@ export function DocPanel() {
       {/* ── 一键创建任务 dialog(checklist 行触发) ── */}
       <Dialog
         open={associateState.open}
-        onOpenChange={(o) =>
-          setAssociateState((s) => ({ ...s, open: o }))
-        }
+        onOpenChange={(o) => {
+          setAssociateState((s) => ({ ...s, open: o }));
+          if (!o) {
+            // 关闭时重置表单 + 清掉 editor 引用,避免下次打开看到上次的标题
+            setCreateForm({
+              title: "",
+              priority: "med",
+              status: "todo",
+              assigneeId: "",
+            });
+            setAssociateState({
+              open: false,
+              currentTaskId: null,
+              position: null,
+              editor: null,
+            });
+          }
+        }}
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -1180,9 +1238,11 @@ export function DocPanel() {
         onOpenChange={(o) => {
           setCreateDialogOpen(o);
           if (!o) {
-            // 关闭时清空,下次打开重置
+            // 关闭时清空标题;模式由"新建"按钮处决定(否则每次打开都跳回 free,与初始 spec 不一致)
             setNewDocTitle("");
-            setNewDocMode("free");
+            // 模式不重置:让"打开新建"按钮按角色推荐设值,关闭时保留用户上次选择
+            // 之前这里写 setNewDocMode("free"),导致用户每次打开都看到 free 而不是他常用的 spec/tdd
+            return;
           }
         }}
       >

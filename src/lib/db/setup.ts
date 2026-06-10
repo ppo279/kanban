@@ -126,6 +126,20 @@ export async function runMigrations() {
     );
 
     CREATE INDEX IF NOT EXISTS spec_interfaces_doc ON spec_interfaces(document_id);
+
+    CREATE TABLE IF NOT EXISTS project_settings (
+      id            INTEGER PRIMARY KEY CHECK (id = 1),
+      name          TEXT NOT NULL DEFAULT 'kanban',
+      background    TEXT,
+      goals         TEXT NOT NULL DEFAULT '[]',
+      non_goals     TEXT NOT NULL DEFAULT '[]',
+      tech_stack    TEXT NOT NULL DEFAULT '[]',
+      updated_at    INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_by_id TEXT REFERENCES users(id)
+    );
+
+    -- 单例默认行:首次启动时插入一条,后续启动看到已存在就跳过
+    INSERT OR IGNORE INTO project_settings (id, name) VALUES (1, 'kanban');
   `);
 
   // 迁移：给 tasks 表添加 type 列（如果不存在）

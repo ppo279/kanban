@@ -169,6 +169,36 @@ export const documentTasks = sqliteTable("document_tasks", {
     .default(sql`(unixepoch() * 1000)`),
 });
 
+/**
+ * 项目设置 — 单例表
+ *
+ * 单项目多人协作平台用,只有一行 (id=1)。字段:
+ *   - name:项目名(展示用,任意 3 人都能改)
+ *   - background:项目背景/介绍 — 自由文本,留项目元信息
+ *   - goals:string[] — 项目目标(结构化,适合后续给 AI 当 context)
+ *   - nonGoals:string[] — 明确不做的事(防 scope creep,适合给 AI 提示)
+ *   - techStack:string[] — 技术栈标签(展示 + 筛选,后端不强校验)
+ *   - updatedAt / updatedById:谁最后改的
+ *
+ * 设计选择:
+ *   - 单例用 PRIMARY KEY CHECK (id = 1) 约束,避免误插多行
+ *   - tags / 数组用 SQLite JSON 模式 (mode: "json"),跟 tasks.tags 保持一致
+ *   - 暂时不引入 workspace 概念(单项目),未来要拆多项目时把 id 改成 nanoid + 删 CHECK 即可
+ */
+export const projectSettings = sqliteTable("project_settings", {
+  id: integer("id").primaryKey(),
+  name: text("name").notNull().default("kanban"),
+  background: text("background"),
+  // 结构化数组用 SQLite JSON 模式 — 跟 tasks.tags 一样
+  goals: text("goals", { mode: "json" }).$type<string[]>().default([]),
+  nonGoals: text("non_goals", { mode: "json" }).$type<string[]>().default([]),
+  techStack: text("tech_stack", { mode: "json" }).$type<string[]>().default([]),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+  updatedById: text("updated_by_id").references(() => users.id),
+});
+
 export type DbUser = typeof users.$inferSelect;
 export type DbTask = typeof tasks.$inferSelect;
 export type DbSession = typeof sessions.$inferSelect;
@@ -177,3 +207,4 @@ export type DbApiInterface = typeof apiInterfaces.$inferSelect;
 export type DbDocument = typeof documents.$inferSelect;
 export type DbDocumentTask = typeof documentTasks.$inferSelect;
 export type DbSpecInterface = typeof specInterfaces.$inferSelect;
+export type DbProjectSettings = typeof projectSettings.$inferSelect;

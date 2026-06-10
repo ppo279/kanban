@@ -76,6 +76,8 @@ export function SpecInterfaceEditor({ documentId, docMode }: Props) {
   // 编辑中的接口
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<Partial<SpecInterface>>({});
+  // 待二次确认删除的接口 id(替代原生 window.confirm,保持与项目其他删除一致)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -132,7 +134,17 @@ export function SpecInterfaceEditor({ documentId, docMode }: Props) {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("删除这个接口定义?")) return;
+    // 二次确认:点删除按钮后变成"确认删除"+"取消",避免误触
+    // 之前用 window.confirm 跟项目其他地方的 Radix Dialog 风格不一致,且有些环境会被拦截
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+      // 3s 没点自动撤销
+      setTimeout(() => {
+        setConfirmDeleteId((cur) => (cur === id ? null : cur));
+      }, 3000);
+      return;
+    }
+    setConfirmDeleteId(null);
     try {
       const r = await fetch(`/api/spec-interfaces/${id}`, {
         method: "DELETE",
@@ -144,6 +156,7 @@ export function SpecInterfaceEditor({ documentId, docMode }: Props) {
         return;
       }
       setItems((prev) => prev.filter((it) => it.id !== id));
+      toast.success("接口已删除");
     } catch {
       toast.error("网络错误");
     }
@@ -430,11 +443,17 @@ export function SpecInterfaceEditor({ documentId, docMode }: Props) {
                     <Button
                       type="button"
                       size="sm"
-                      variant="ghost"
+                      variant={confirmDeleteId === it.id ? "destructive" : "ghost"}
                       onClick={() => handleDelete(it.id)}
-                      className="h-5 px-1.5 text-[10px] text-rose-500 opacity-0 group-hover:opacity-100"
+                      className={cn(
+                        "h-5 px-1.5 text-[10px] text-rose-500 opacity-0 group-hover:opacity-100",
+                        confirmDeleteId === it.id && "opacity-100"
+                      )}
+                      title={
+                        confirmDeleteId === it.id ? "再点一次确认删除" : "删除接口"
+                      }
                     >
-                      <Trash2 className="h-3 w-3" />
+                      {confirmDeleteId === it.id ? "确认" : <Trash2 className="h-3 w-3" />}
                     </Button>
                   )}
                 </div>

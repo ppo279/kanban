@@ -64,6 +64,22 @@ export function PendingReviewPanel({
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   // 草稿(编辑时)
   const [editDraft, setEditDraft] = useState<any>(null);
+  // 已"完成"的本地编辑 — Map<candidateIdx, editedProposed> — 提交后保留到下一次候选变化
+  // 之前 commitEdit 清空 editingIdx 但 editDraft 一起丢了,applySelected 只看 editingIdx === cIdx,导致点"完成"再点"应用"会丢用户编辑
+  const [committedEdits, setCommittedEdits] = useState<Map<number, any>>(
+    new Map()
+  );
+
+  // 候选变化时清掉越界的 committedEdits(index 会随 doc 变化失效)
+  useEffect(() => {
+    setCommittedEdits((prev) => {
+      const next = new Map<number, any>();
+      for (const [k, v] of prev.entries()) {
+        if (k < candidates.length) next.set(k, v);
+      }
+      return next;
+    });
+  }, [candidates]);
   // 折叠状态
   const [ifaceOpen, setIfaceOpen] = useState(true);
   const [checkOpen, setCheckOpen] = useState(true);
@@ -127,8 +143,12 @@ export function PendingReviewPanel({
 
   function commitEdit() {
     if (editingIdx === null || !editDraft) return;
-    const c = candidates[editingIdx];
-    // 草稿回写 — 我们这里直接修改后渲染,不做 back patch(简化)
+    // 把草稿存到 committedEdits 而不是丢,让 applySelected 还能拿到
+    setCommittedEdits((prev) => {
+      const next = new Map(prev);
+      next.set(editingIdx, editDraft);
+      return next;
+    });
     setEditingIdx(null);
     setEditDraft(null);
     toast.success("已编辑(未保存,点「应用」才生效)");
@@ -156,12 +176,15 @@ export function PendingReviewPanel({
       // 1. 创建 spec_interfaces(并行)
       const ifaceResults = await Promise.allSettled(
         selectedInterfaces.map(async (c) => {
-          // 如果用户正在编辑这一项,editDraft 覆盖 proposed
+          // 优先级:正在编辑(editDraft) > 已完成未应用的编辑(committedEdits) > 原始 proposed
           const cIdx = candidates.indexOf(c);
-          const proposed =
+          const liveEdit =
             editingIdx === cIdx && editDraft
-              ? { ...c.proposed, ...editDraft }
-              : c.proposed;
+              ? editDraft
+              : committedEdits.get(cIdx);
+          const proposed = liveEdit
+            ? { ...c.proposed, ...liveEdit }
+            : c.proposed;
           const r = await fetch("/api/spec-interfaces", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -278,3 +278,43 @@ export const MOCK_PLACEHOLDER_PRESETS: Record<string, { value: string; label: st
   ],
   object: [],
 };
+
+/* ── ProjectSettings ── */
+
+/** 单例项目设置(整个平台就一份) */
+export interface ProjectSettings {
+  name: string;
+  background: string | null;
+  /** 项目目标 — 适合做上下文(给 AI / 团队展示) */
+  goals: string[];
+  /** 明确不做 — 防止 scope creep,也适合做 AI 提示 */
+  nonGoals: string[];
+  /** 技术栈标签 — 自由标签,不做后端强校验 */
+  techStack: string[];
+  updatedAt: number;
+  updatedById: string | null;
+}
+
+/** 预置技术栈建议 — 给标签输入框做 quick add,用户可任意加新标签 */
+export const TECH_STACK_SUGGESTIONS: string[] = [
+  "Next.js",
+  "React",
+  "TypeScript",
+  "Tiptap",
+  "Yjs",
+  "Socket.IO",
+  "Drizzle",
+  "SQLite",
+  "PostgreSQL",
+  "Tailwind CSS",
+  "shadcn/ui",
+  "Zustand",
+  "Vitest",
+  "Zod",
+  "Node.js",
+  "Hono",
+  "Express",
+  "Vite",
+  "Docker",
+  "Redis",
+];

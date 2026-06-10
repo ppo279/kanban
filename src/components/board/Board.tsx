@@ -11,7 +11,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { Plus, LogOut, PanelRightOpen } from "lucide-react";
+import { Plus, LogOut, PanelRightOpen, Settings } from "lucide-react";
 import { toast } from "sonner";
 import { Column } from "./Column";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -26,6 +26,7 @@ import { between } from "@/lib/fractional";
 import { STATUSES, ROLE_COLOR, ROLE_LABEL, type Task, type Status } from "@/types";
 import { useRouter } from "next/navigation";
 import { DocSidebar } from "@/components/docs/DocSidebar";
+import { ProjectSettingsDialog } from "@/components/project/ProjectSettingsDialog";
 
 export function Board() {
   const router = useRouter();
@@ -46,6 +47,8 @@ export function Board() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   // 协作文档跳转高亮 — TaskItemView 点徽章 → 关文档侧栏 → 滚动到任务卡 → 闪一下
   const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
+  // 项目设置 dialog 开关
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const byStatus = useMemo(() => selectByStatus({ tasks } as any), [tasks]);
@@ -204,6 +207,14 @@ export function Board() {
           >
             <PanelRightOpen className="mr-1 h-4 w-4" /> 文档
           </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSettingsOpen(true)}
+            title="项目设置"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
           <Button onClick={() => setNewOpen(true)} size="sm">
             <Plus className="mr-1 h-4 w-4" /> 新建任务
           </Button>
@@ -276,6 +287,7 @@ export function Board() {
 <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
       <TaskDetailDialog task={detailTask} open={detailOpen} onOpenChange={setDetailOpen} />
       <DocDetailDialog />
+      <ProjectSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }
