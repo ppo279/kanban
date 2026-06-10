@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useDroppable } from "@dnd-kit/core";
 import { TaskCard } from "./TaskCard";
@@ -10,6 +10,8 @@ interface Props {
   tasks: Task[];
   users: User[];
   onCardClick: (t: Task) => void;
+  onViewTask: (t: Task) => void;
+  onEditTask: (t: Task) => void;
   /** 当前正在闪的任务 ID(协作文档跳转高亮) */
   flashTaskId?: string | null;
 }
@@ -21,7 +23,7 @@ const STATUS_HEADER: Record<Status, string> = {
   done: "border-t-emerald-500",
 };
 
-export function Column({ status, tasks, users, onCardClick, flashTaskId }: Props) {
+export function Column({ status, tasks, users, onCardClick, onViewTask, onEditTask, flashTaskId }: Props) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   return (
@@ -52,6 +54,8 @@ export function Column({ status, tasks, users, onCardClick, flashTaskId }: Props
             task={t}
             assignee={users.find((u) => u.id === t.assigneeId)}
             onClick={onCardClick}
+            onView={onViewTask}
+            onEdit={onEditTask}
             flash={flashTaskId === t.id}
           />
         ))}

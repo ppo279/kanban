@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState, useEffect, useRef } from "react";
 import {
@@ -119,6 +119,20 @@ export function Board() {
     router.push("/login");
   }
 
+  function handleViewTask(t: Task) {
+    setDetailTask(t);
+    setDetailOpen(true);
+    setSelectedTaskId(t.id);
+    if (!sidebarOpen) setSidebarOpen(true);
+  }
+
+  function handleEditTask(t: Task) {
+    setDetailTask(t);
+    setDetailOpen(true);
+    setSelectedTaskId(t.id);
+    if (!sidebarOpen) setSidebarOpen(true);
+  }
+
   // ── 监听"从协作文档跳到看板任务"事件(DocPanel 转发) ──
   useEffect(() => {
     const onJump = (e: Event) => {
@@ -205,12 +219,14 @@ export function Board() {
                   status={s}
                   tasks={byStatus[s]}
                   users={users}
-                    onCardClick={(t) => {
-                      setDetailTask(t);
-                      setDetailOpen(true);
-                      setSelectedTaskId(t.id);
-                      if (!sidebarOpen) setSidebarOpen(true);
-                    }}
+                  onCardClick={(t) => {
+                    setDetailTask(t);
+                    setDetailOpen(true);
+                    setSelectedTaskId(t.id);
+                    if (!sidebarOpen) setSidebarOpen(true);
+                  }}
+                  onViewTask={handleViewTask}
+                  onEditTask={handleEditTask}
                   flashTaskId={flashTaskId}
                 />
               ))}

@@ -23,6 +23,7 @@ import { TaskList, TaskItem } from "@/lib/tiptap-task-list";
 import { EditorToolbar } from "./EditorToolbar";
 import { Button } from "@/components/ui/button";
 import type { Awareness } from "y-protocols/awareness";
+import type { TiptapNode } from "@/lib/specDetector";
 
 interface Props {
   docId: string;
@@ -35,6 +36,8 @@ interface Props {
   onChecklistChange?: (hasChecklist: boolean) => void;
   /** checklist 进度统计 — 给文档顶部进度条用 */
   onChecklistStatsChange?: (stats: { total: number; checked: number }) => void;
+  /** 文档 Tiptap JSON 变化时回调 — 给待审面板做实时 detect */
+  onJsonChange?: (docJson: TiptapNode) => void;
 }
 
 /** 暴露给父组件的命令式 API(DocPanel 用) */
@@ -341,6 +344,7 @@ export const CollaborativeEditor = forwardRef<
   onSave,
   onChecklistChange,
   onChecklistStatsChange,
+  onJsonChange,
 }, ref) {
   const savedRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -558,6 +562,20 @@ export const CollaborativeEditor = forwardRef<
       editor.off("update", compute);
     };
   }, [editor, onChecklistStatsChange]);
+
+  // 监听文档 JSON 变化 — 给「待审」面板做实时 detect
+  useEffect(() => {
+    if (!editor || !onJsonChange) return;
+    const push = () => {
+      // editor.getJSON() 返回 ProseMirror JSON,结构上和 TiptapNode 兼容
+      onJsonChange(editor.getJSON() as TiptapNode);
+    };
+    editor.on("update", push);
+    push();
+    return () => {
+      editor.off("update", push);
+    };
+  }, [editor, onJsonChange]);
 
   // 暴露命令式 API 给父组件(DocPanel)用
   useImperativeHandle(

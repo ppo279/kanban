@@ -148,38 +148,23 @@ function findSectionForNode(
   return lastHeading;
 }
 
-/** 走 doc 树,展平成 [{ type, node, pos }] 的列表
- * 这里我们没法算真实 ProseMirror position(需要 editor instance),
- * 但 Tiptap 在 collaborative 模式下 NodePos 通常跟 JSON 数组下标一致,
- * 加上 relativePos(在父节点里的下标)其实更准 — DocPanel 那边用 editor.doc.descendants
- * 自己算精确 position。我们这里先用 0 占位,DocPanel 应用的时候用真实 editor 算。
- */
+/** 走 doc 树,展平成 [{ type, node, sectionKey }] 的列表(单层 walk,任意嵌套都能命中) */
 function flattenDoc(
   doc: TiptapNode,
-  parentContent: TiptapNode[] = [],
-  parentIdx = 0,
   currentSection = ""
 ): Array<{ type: string; node: TiptapNode; sectionKey: string; pos: number }> {
   const out: Array<{ type: string; node: TiptapNode; sectionKey: string; pos: number }> = [];
   if (!doc || !Array.isArray(doc.content)) return out;
 
   let section = currentSection;
-  for (let i = 0; i < doc.content.length; i++) {
-    const node = doc.content[i];
+  for (const node of doc.content) {
     if (node.type === "heading") {
       section = extractText(node).trim();
     }
-    // ProseMirror position: 我们不在这里算 — DocPanel 用 editor.state.doc.resolve 算
     out.push({ type: node.type, node, sectionKey: section || "未分类", pos: -1 });
-    // 递归
+    // 递归 — 任何含 children 的节点都展开(列表项、列表、段落、blockquote 等)
     if (Array.isArray(node.content)) {
-      for (const child of node.content) {
-        if (Array.isArray(child.content)) {
-          out.push(
-            ...flattenDoc(child, child.content, 0, section)
-          );
-        }
-      }
+      out.push(...flattenDoc(node, section));
     }
   }
   return out;
