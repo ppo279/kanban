@@ -28,6 +28,10 @@ export interface Task {
   type: TaskType;
   assigneeId: string;
   createdById: string;
+  /** 父任务 id — 子任务指向父任务;父任务为 null */
+  parentId: string | null;
+  /** 标签 — 现在没 UI(为将来 sprint 预留),数据已落地 */
+  tags: string[];
   position: number;
   createdAt: number;
   updatedAt: number;

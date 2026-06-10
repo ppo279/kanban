@@ -37,6 +37,8 @@ import { CollaborativeEditor, type CollaborativeEditorHandle } from "./Collabora
 import { AISettingsDialog } from "./AISettingsDialog";
 import { AIGenerateDialog } from "./AIGenerateDialog";
 import { DeleteDocDialog } from "./DeleteDocDialog";
+import { ImportToKanbanDialog, parseChecklistFromDocJson } from "./ImportToKanbanDialog";
+import { SpecInterfaceEditor } from "./SpecInterfaceEditor";
 import {
   hasAPIKey,
   getAPIKey,
@@ -362,9 +364,45 @@ export function DocPanel() {
     };
     root.addEventListener("checklist:jump-to-task", jumpHandler);
 
+    // ── 监听"从 task 跳到 doc"事件:TaskDetailDialog 触发,DocPanel 加载并选中 ──
+    const jumpToDocHandler = async (e: Event) => {
+      const ce = e as CustomEvent<{ docId: string }>;
+      const docId = ce.detail?.docId;
+      if (!docId) return;
+      // 加载这个 doc
+      try {
+        const r = await fetch(`/api/documents/${docId}`, { credentials: "include" });
+        const data = await r.json();
+        if (data.ok && data.document) {
+          setSelectedDoc(data.document);
+          setDialogOpen(true);
+          toast.success("已跳转到文档");
+        } else {
+          toast.error("文档加载失败");
+        }
+      } catch {
+        toast.error("网络错误");
+      }
+    };
+    window.addEventListener("kanban:jump-to-doc", jumpToDocHandler);
+
+    // ── 监听"关掉 doc dialog + 跳到 mock 任务"事件:SpecInterfaceEditor 触发 ──
+    const closeAndJumpHandler = (e: Event) => {
+      const ce = e as CustomEvent<{ taskId: string }>;
+      setDialogOpen(false);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent("kanban:jump-to-task", { detail: ce.detail })
+        );
+      }, 100);
+    };
+    window.addEventListener("kanban:close-doc-and-jump-task", closeAndJumpHandler);
+
     return () => {
       root.removeEventListener("checklist:associate-task", handler);
       root.removeEventListener("checklist:jump-to-task", jumpHandler);
+      window.removeEventListener("kanban:jump-to-doc", jumpToDocHandler);
+      window.removeEventListener("kanban:close-doc-and-jump-task", closeAndJumpHandler);
     };
   }, [me]);
 
@@ -710,6 +748,37 @@ export function DocPanel() {
     title: string;
   } | null>(null);
 
+  // 导入 checklist 到看板的 dialog
+  const [importTarget, setImportTarget] = useState<{
+    id: string;
+    title: string;
+    items: { sectionKey: string; text: string }[];
+  } | null>(null);
+
+  function handleOpenImport() {
+    if (!selectedDoc) return;
+    // 解析 doc.content(Tiptap JSON 格式)里的所有 checklist 项
+    let items: { sectionKey: string; text: string }[] = [];
+    if (selectedDoc.content) {
+      try {
+        const json = JSON.parse(selectedDoc.content);
+        items = parseChecklistFromDocJson(json);
+      } catch {
+        // content 不是 JSON 就算了
+        items = [];
+      }
+    }
+    if (items.length === 0) {
+      toast.info("当前文档没有可导入的 checklist 项");
+      return;
+    }
+    setImportTarget({
+      id: selectedDoc.id,
+      title: selectedDoc.title,
+      items,
+    });
+  }
+
   async function performDeleteDoc(id: string) {
     const r = await fetch(`/api/documents/${id}`, {
       method: "DELETE",
@@ -999,6 +1068,20 @@ export function DocPanel() {
                 <Users className="h-3 w-3" />
                 {onlineUsers.length + 1}
               </div>
+              {/* 导入 checklist 到看板 — spec/tdd 模式才有用 */}
+              {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px] gap-1"
+                  onClick={handleOpenImport}
+                  title="把文档里的 checklist 项批量导入到看板(自动建立父-子结构)"
+                >
+                  <ListChecks className="h-3 w-3" />
+                  导入看板
+                </Button>
+              )}
             </DialogTitle>
             {onlineUsers.length > 0 && (
               <div className="flex gap-2 flex-wrap mt-1">
@@ -1047,6 +1130,16 @@ export function DocPanel() {
                 ) : null}
               </div>
             </div>
+
+            {/* 中:结构化接口(spec/tdd 模式才有)— 接口设计 section 取代纯文本 */}
+            {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && (
+              <div className="border rounded-md bg-orange-50/20 p-2 max-h-[260px] overflow-y-auto">
+                <SpecInterfaceEditor
+                  documentId={selectedDoc.id}
+                  docMode={selectedDoc.mode}
+                />
+              </div>
+            )}
 
             {/* 下:关联任务面板 */}
             <div className="border rounded-md bg-slate-50/50 max-h-[180px] overflow-y-auto">
@@ -1100,10 +1193,24 @@ export function DocPanel() {
                   {linkedTasks.map((link) => {
                     const t = resolveTask(link);
                     const assignee = users.find((u) => u.id === t.assigneeId);
+                    // 父任务标签:__parent__ sectionKey 是 spec import 出来时给父任务用的标识
+                    const isParent = link.sectionKey === "__parent__";
                     return (
                       <div
                         key={link.taskId}
-                        className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-white group"
+                        className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-white group cursor-pointer"
+                        onClick={() => {
+                          // 触发看板跳转 + 关闭当前 doc 对话框
+                          setDialogOpen(false);
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent("kanban:jump-to-task", {
+                                detail: { taskId: link.taskId },
+                              })
+                            );
+                          }, 100);
+                        }}
+                        title="点跳到看板"
                       >
                         <span
                           className={cn(
@@ -1116,6 +1223,23 @@ export function DocPanel() {
                         >
                           {STATUS_LABEL[t.status]}
                         </span>
+                        {/* 父子标识 */}
+                        {isParent ? (
+                          <span
+                            className="shrink-0 inline-flex items-center gap-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 px-1 py-0.5 text-[9px] font-medium"
+                            title="这是从本 spec 导入时创建的父任务"
+                          >
+                            <ListChecks className="h-2.5 w-2.5" />
+                            父
+                          </span>
+                        ) : link.sectionKey ? (
+                          <span
+                            className="shrink-0 inline-flex items-center rounded bg-sky-50 text-sky-700 border border-sky-200 px-1 py-0.5 text-[9px] font-medium"
+                            title={`从本 spec 的「${link.sectionKey}」section 衍生`}
+                          >
+                            {link.sectionKey}
+                          </span>
+                        ) : null}
                         <span className="flex-1 truncate font-medium">
                           {t.title}
                         </span>
@@ -1137,7 +1261,10 @@ export function DocPanel() {
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleUnlinkTask(link.taskId)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleUnlinkTask(link.taskId);
+                          }}
                           className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-red-500 transition-opacity"
                           title="解除关联(不删除任务)"
                         >
@@ -1570,6 +1697,15 @@ export function DocPanel() {
         target={deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
         onConfirm={performDeleteDoc}
+      />
+
+      {/* ── 导入 checklist 到看板的对话框 ── */}
+      <ImportToKanbanDialog
+        open={importTarget !== null}
+        onOpenChange={(o) => !o && setImportTarget(null)}
+        documentId={importTarget?.id ?? ""}
+        documentTitle={importTarget?.title ?? ""}
+        items={importTarget?.items ?? []}
       />
     </div>
   );

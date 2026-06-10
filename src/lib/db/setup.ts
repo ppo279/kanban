@@ -30,10 +30,15 @@ export async function runMigrations() {
       type TEXT NOT NULL DEFAULT 'feature',
       assignee_id TEXT NOT NULL REFERENCES users(id),
       created_by_id TEXT NOT NULL REFERENCES users(id),
+      parent_id TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
       position REAL NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
+
+    CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_id);
+    CREATE INDEX IF NOT EXISTS tasks_status_position ON tasks(status, position);
 
     CREATE INDEX IF NOT EXISTS tasks_status_position ON tasks(status, position);
 
@@ -101,6 +106,26 @@ export async function runMigrations() {
 
     CREATE INDEX IF NOT EXISTS document_tasks_doc ON document_tasks(document_id);
     CREATE INDEX IF NOT EXISTS document_tasks_task ON document_tasks(task_id);
+
+    CREATE TABLE IF NOT EXISTS spec_interfaces (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      method TEXT NOT NULL DEFAULT 'GET',
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      request_schema TEXT,
+      response_schema TEXT,
+      mock_response TEXT,
+      mock_status_code INTEGER NOT NULL DEFAULT 200,
+      derived_task_id TEXT,
+      derived_interface_id TEXT,
+      position REAL NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE INDEX IF NOT EXISTS spec_interfaces_doc ON spec_interfaces(document_id);
   `);
 
   // 迁移：给 tasks 表添加 type 列（如果不存在）
@@ -122,6 +147,14 @@ export async function runMigrations() {
   // 迁移：给 documents 表加 mode/spec_template 列
   try { sqlite.exec(`ALTER TABLE documents ADD COLUMN mode TEXT NOT NULL DEFAULT 'free'`); } catch {}
   try { sqlite.exec(`ALTER TABLE documents ADD COLUMN spec_template TEXT`); } catch {}
+
+  // 迁移：tasks 表加 parent_id(子任务→父任务) + tags(JSON 数组,预留 sprint)
+  try { sqlite.exec(`ALTER TABLE tasks ADD COLUMN parent_id TEXT`); } catch {}
+  try { sqlite.exec(`ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`); } catch {}
+  try { sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_id)`); } catch {}
+
+  // 迁移：spec_interfaces 表(已用 CREATE TABLE 兜底,这里留空兜底 ALTER)
+  try { sqlite.exec(`CREATE INDEX IF NOT EXISTS spec_interfaces_doc ON spec_interfaces(document_id)`); } catch {}
 
   sqlite.close();
   console.log("[migrate] schema ready at", dbPath);

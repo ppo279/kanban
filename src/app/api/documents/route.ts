@@ -3,20 +3,29 @@ import { z } from "zod";
 import { db, schema } from "@/lib/db";
 import { getUserFromCookie } from "@/lib/auth";
 import { nanoid } from "nanoid";
+import { like, or } from "drizzle-orm";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const user = await getUserFromCookie();
   if (!user) return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
 
-  const rows = await db
-    .select()
-    .from(schema.documents)
-    .orderBy(schema.documents.updatedAt);
+  const { searchParams } = new URL(req.url);
+  const q = searchParams.get("q")?.trim();
+
+  // 不传 q 走原逻辑(全量)
+  // 传 q 走 title LIKE 模糊匹配 — 用来给 TaskDetailDialog 搜文档关联候选
+  let query = db.select().from(schema.documents).$dynamic();
+  if (q) {
+    query = query.where(like(schema.documents.title, `%${q}%`));
+  }
+  const rows = await query.orderBy(schema.documents.updatedAt);
 
   return NextResponse.json({
     ok: true,
     documents: rows.map((r) => ({
-      ...r,
+      id: r.id,
+      title: r.title,
+      mode: r.mode,
       createdAt: r.createdAt instanceof Date ? r.createdAt.getTime() : Number(r.createdAt),
       updatedAt: r.updatedAt instanceof Date ? r.updatedAt.getTime() : Number(r.updatedAt),
     })),

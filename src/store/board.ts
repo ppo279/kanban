@@ -20,6 +20,8 @@ interface BoardState {
   upsertTask: (t: Task) => void;
   removeTask: (id: string) => void;
   moveTaskLocal: (id: string, status: Status, position: number) => void;
+  /** 批量插入/更新(给 import-tasks 用) */
+  upsertTasks: (ts: Task[]) => void;
 }
 
 export const useBoardStore = create<BoardState>((set) => ({
@@ -39,6 +41,12 @@ export const useBoardStore = create<BoardState>((set) => ({
       next[idx] = t;
       return { tasks: next };
     }),
+  upsertTasks: (ts) =>
+    set((s) => {
+      const map = new Map(s.tasks.map((t) => [t.id, t]));
+      for (const t of ts) map.set(t.id, t);
+      return { tasks: Array.from(map.values()) };
+    }),
   removeTask: (id) => set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) })),
   moveTaskLocal: (id, status, position) =>
     set((s) => ({
@@ -52,4 +60,30 @@ export function selectByStatus(state: BoardState): Record<Status, Task[]> {
   for (const t of state.tasks) map[t.status].push(t);
   for (const s of STATUSES) map[s].sort((a, b) => a.position - b.position);
   return map;
+}
+
+/** 拿到 task 的所有子任务(已排序) */
+export function selectChildrenOf(state: BoardState, parentId: string): Task[] {
+  return state.tasks
+    .filter((t) => t.parentId === parentId)
+    .sort((a, b) => a.position - b.position);
+}
+
+/** 拿到 task 的父任务(没有就 null) */
+export function selectParentOf(state: BoardState, task: Task): Task | null {
+  if (!task.parentId) return null;
+  return state.tasks.find((t) => t.id === task.parentId) ?? null;
+}
+
+/** 计算一组子任务的进度 */
+export interface SubtaskProgress {
+  total: number;
+  done: number;
+  /** 0-1 的比例 */
+  ratio: number;
+}
+export function computeSubtaskProgress(children: Task[]): SubtaskProgress {
+  const total = children.length;
+  const done = children.filter((c) => c.status === "done").length;
+  return { total, done, ratio: total === 0 ? 0 : done / total };
 }

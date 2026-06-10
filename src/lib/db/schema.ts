@@ -30,6 +30,12 @@ export const tasks = sqliteTable("tasks", {
   createdById: text("created_by_id")
     .notNull()
     .references(() => users.id),
+  // 父任务 id — 子任务通过这个字段指向父任务,父任务可以有任意个子任务
+  // UI 软限 2 层(parent 的 parent 不允许),DB 不强约束
+  parentId: text("parent_id"),
+  // 标签 — 暂时不实现 UI(为将来 sprint 预留),先存着
+  // 用 JSON 数组形式,SQLite 端就是 text
+  tags: text("tags", { mode: "json" }).$type<string[]>().default([]),
   position: real("position").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
@@ -116,6 +122,40 @@ export const documents = sqliteTable("documents", {
     .default(sql`(unixepoch() * 1000)`),
 });
 
+/**
+ * spec 文档的结构化接口设计
+ *
+ * 跟 markdown 的"接口设计"section 是 1:1 — 那个 section 不再是纯文本,
+ * 这里是结构化数据(可以一键转 mock,反向链接 task 等)
+ */
+export const specInterfaces = sqliteTable("spec_interfaces", {
+  id: text("id").primaryKey(),
+  documentId: text("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  method: text("method", { enum: ["GET", "POST", "PUT", "DELETE", "PATCH"] })
+    .notNull()
+    .default("GET"),
+  path: text("path").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  requestSchema: text("request_schema"),
+  responseSchema: text("response_schema"),
+  mockResponse: text("mock_response"),
+  mockStatusCode: integer("mock_status_code").notNull().default(200),
+  // 关联:这个 spec_interface 已经被转成了哪个 mock-api 任务
+  // (nullable,转了一次后置上,避免重复转)
+  derivedTaskId: text("derived_task_id"),
+  derivedInterfaceId: text("derived_interface_id"),
+  position: real("position").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
 export const documentTasks = sqliteTable("document_tasks", {
   documentId: text("document_id")
     .notNull()
@@ -136,3 +176,4 @@ export type DbApiModule = typeof apiModules.$inferSelect;
 export type DbApiInterface = typeof apiInterfaces.$inferSelect;
 export type DbDocument = typeof documents.$inferSelect;
 export type DbDocumentTask = typeof documentTasks.$inferSelect;
+export type DbSpecInterface = typeof specInterfaces.$inferSelect;

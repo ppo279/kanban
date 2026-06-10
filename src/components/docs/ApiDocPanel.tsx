@@ -43,6 +43,13 @@ import {
 import { MockFieldEditor } from "./MockFieldEditor";
 import { type ResponseMode, type ResponseWrapper } from "@/types";
 import { PAGINATION_PRESETS, type MockFieldDef } from "@/lib/mock-engine";
+import { FileText, ExternalLink } from "lucide-react";
+
+interface SpecInterfaceLink {
+  specInterfaceId: string;
+  documentId: string;
+  documentTitle: string;
+}
 
 interface ModuleWithInterfaces extends ApiModule {
   interfaces: ApiInterface[];
@@ -57,6 +64,11 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
   const [selectedIface, setSelectedIface] = useState<ApiInterface | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+
+  // 关联 spec 映射:apiInterface.id → { specInterfaceId, documentId, documentTitle }
+  const [specLinkByIface, setSpecLinkByIface] = useState<
+    Record<string, SpecInterfaceLink>
+  >({});
 
   // New module state
   const [newModuleName, setNewModuleName] = useState("");
@@ -96,12 +108,14 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
 
   const loadModulesAndInterfaces = useCallback(async () => {
     try {
-      const [modR, ifaceR] = await Promise.all([
+      const [modR, ifaceR, docsR] = await Promise.all([
         fetch("/api/modules", { credentials: "include" }),
         fetch("/api/interfaces", { credentials: "include" }),
+        fetch("/api/documents", { credentials: "include" }),
       ]);
       const modData = await modR.json();
       const ifaceData = await ifaceR.json();
+      const docsData = await docsR.json();
       if (modData.ok && ifaceData.ok) {
         const allInterfaces: ApiInterface[] = ifaceData.interfaces;
         const moduleList: ModuleWithInterfaces[] = modData.modules.map((m: ApiModule) => ({
@@ -109,6 +123,34 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
           interfaces: allInterfaces.filter((i) => i.moduleId === m.id),
         }));
         setModules(moduleList);
+      }
+      // 拉所有 spec_interfaces,建 interfaceId → 关联文档 的映射
+      // (每个 spec_interface 知道自己 derived 出了哪个 api_interface)
+      if (docsData.ok) {
+        const docs = docsData.documents as Array<{ id: string; title: string; mode: string }>;
+        const specDocs = docs.filter((d) => d.mode === "spec" || d.mode === "tdd");
+        const linkMap: Record<string, SpecInterfaceLink> = {};
+        await Promise.all(
+          specDocs.map(async (d) => {
+            const r = await fetch(
+              `/api/spec-interfaces?documentId=${d.id}`,
+              { credentials: "include" }
+            );
+            const data = await r.json();
+            if (data.ok) {
+              for (const si of data.interfaces) {
+                if (si.derivedInterfaceId) {
+                  linkMap[si.derivedInterfaceId] = {
+                    specInterfaceId: si.id,
+                    documentId: d.id,
+                    documentTitle: d.title,
+                  };
+                }
+              }
+            }
+          })
+        );
+        setSpecLinkByIface(linkMap);
       }
     } catch {
       // ignore
@@ -547,37 +589,61 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
 
                   {isExpanded && (
                     <div className="ml-4 space-y-0.5">
-                      {m.interfaces.map((iface) => (
-                        <div
-                          key={iface.id}
-                          className={cn(
-                            "flex items-center gap-1.5 rounded-md px-2 py-1 cursor-pointer group text-xs",
-                            selectedIface?.id === iface.id
-                              ? "bg-accent text-accent-foreground"
-                              : "hover:bg-muted"
-                          )}
-                          onClick={() => selectInterface(iface)}
-                        >
-                          <span
+                      {m.interfaces.map((iface) => {
+                        const specLink = specLinkByIface[iface.id];
+                        return (
+                          <div
+                            key={iface.id}
                             className={cn(
-                              "inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold text-white min-w-[36px] justify-center shrink-0",
-                              HTTP_METHOD_COLOR[iface.method as keyof typeof HTTP_METHOD_COLOR] ?? "bg-gray-400"
+                              "flex items-center gap-1.5 rounded-md px-2 py-1 cursor-pointer group text-xs",
+                              selectedIface?.id === iface.id
+                                ? "bg-accent text-accent-foreground"
+                                : "hover:bg-muted"
                             )}
+                            onClick={() => selectInterface(iface)}
                           >
-                            {iface.method}
-                          </span>
-                          <span className="flex-1 truncate font-mono text-[11px]">{iface.path}</span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteInterface(iface.id);
-                            }}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))}
+                            <span
+                              className={cn(
+                                "inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold text-white min-w-[36px] justify-center shrink-0",
+                                HTTP_METHOD_COLOR[iface.method as keyof typeof HTTP_METHOD_COLOR] ?? "bg-gray-400"
+                              )}
+                            >
+                              {iface.method}
+                            </span>
+                            <span className="flex-1 truncate font-mono text-[11px]">{iface.path}</span>
+                            {/* 关联 spec 徽章 — 反向链接到 spec doc */}
+                            {specLink && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.dispatchEvent(
+                                    new CustomEvent("kanban:jump-to-doc", {
+                                      detail: { docId: specLink.documentId },
+                                    })
+                                  );
+                                }}
+                                className="shrink-0 inline-flex items-center gap-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 px-1 py-0.5 text-[9px] hover:bg-amber-100"
+                                title={`来自 spec: ${specLink.documentTitle},点跳转`}
+                              >
+                                <FileText className="h-2.5 w-2.5" />
+                                <span className="max-w-[60px] truncate">{specLink.documentTitle}</span>
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteInterface(iface.id);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                     </div>
+                  )}
 
                       {showNewIface === m.id && (
                         <div className="flex flex-col gap-1 p-2 bg-muted/50 rounded-md">
@@ -614,16 +680,14 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
                         </div>
                       )}
 
-                      {m.interfaces.length === 0 && showNewIface !== m.id && (
-                        <div className="text-[11px] text-muted-foreground py-1 pl-2">
-                          暂无接口
-                        </div>
-                      )}
+                       {m.interfaces.length === 0 && showNewIface !== m.id && (
+                         <div className="text-[11px] text-muted-foreground py-1 pl-2">
+                           暂无接口
+                         </div>
+                       )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                  );
+                })}
 
             {modules.length === 0 && (
               <div className="text-xs text-muted-foreground py-4 text-center">

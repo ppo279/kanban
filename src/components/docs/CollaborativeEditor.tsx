@@ -47,6 +47,22 @@ export interface CollaborativeEditorHandle {
   hasChecklist: () => boolean;
   /** 替换整个文档内容(AI 接管场景) */
   setContent: (text: string) => boolean;
+  /**
+   * 在 doc 里找一个 codeBlock 节点(按 sourceHash 在 JSON 树里匹配,不太精确但够用),
+   * 给它打上 data-converted attr,这样下次 detectSpecCandidates 不会重复提
+   * @returns 找到并打标返回 true
+   */
+  markCodeBlockConverted: (sourceHash: string, entityId: string) => boolean;
+  /**
+   * 给 taskItem 节点打 data-task-id + data-section-key,做"已衍生 task"标记
+   * @param sourceText 节点文字内容(用于在 tree 里定位)
+   */
+  markTaskItemConverted: (sourceText: string, taskId: string, sectionKey: string) => boolean;
+  /**
+   * 找 codeBlock / taskItem 节点并高亮(临时加 data-highlight=true attr,500ms 后自动去掉)
+   * 给「待审」section 点 item 时高亮对应源用
+   */
+  highlightSource: (kind: "interface" | "checklist", sourceHash: string) => boolean;
 }
 
 /** 将纯文本转换为 Tiptap JSON（每个段落为一行） */
@@ -362,7 +378,47 @@ export const CollaborativeEditor = forwardRef<
       withoutInputRules(Italic),
       withoutInputRules(Strike),
       withoutInputRules(Code),
-      withoutInputRules(CodeBlock),
+      // CodeBlock: 加 data-converted / data-converted-hash / data-flash 三个 attr
+      // — 「待审」section 用来标"已提取"和"临时高亮"
+      withoutInputRules(
+        CodeBlock.extend({
+          addAttributes() {
+            return {
+              language: {
+                default: null,
+                parseHTML: (el) => el.getAttribute("language"),
+                renderHTML: (attrs) =>
+                  attrs.language ? { language: attrs.language } : {},
+              },
+              "data-converted": {
+                default: null,
+                parseHTML: (el) => el.getAttribute("data-converted") || null,
+                renderHTML: (attrs) =>
+                  attrs["data-converted"]
+                    ? { "data-converted": attrs["data-converted"] }
+                    : {},
+              },
+              "data-converted-hash": {
+                default: null,
+                parseHTML: (el) =>
+                  el.getAttribute("data-converted-hash") || null,
+                renderHTML: (attrs) =>
+                  attrs["data-converted-hash"]
+                    ? { "data-converted-hash": attrs["data-converted-hash"] }
+                    : {},
+              },
+              "data-flash": {
+                default: null,
+                parseHTML: (el) => el.getAttribute("data-flash") || null,
+                renderHTML: (attrs) =>
+                  attrs["data-flash"]
+                    ? { "data-flash": attrs["data-flash"] }
+                    : {},
+              },
+            };
+          },
+        })
+      ),
       withoutInputRules(Blockquote),
       withoutInputRules(BulletList),
       withoutInputRules(OrderedList),
@@ -557,6 +613,102 @@ export const CollaborativeEditor = forwardRef<
           /* not JSON, fall through */
         }
         return editor.commands.setContent(textToTiptapJSON(text));
+      },
+      markCodeBlockConverted: (sourceHash: string, entityId: string) => {
+        if (!editor) return false;
+        let found = false;
+        editor.state.doc.descendants((node, pos) => {
+          if (found) return false;
+          if (node.type.name !== "codeBlock") return true;
+          // sourceHash 是 detector 那边算的(基于 text 前 200 字),
+          // 我们这里用相同的算法重算
+          const text = node.textContent || "";
+          const key = (
+            "interface|" + text.slice(0, 200)
+          ).split("").reduce((h: number, c: string) => ((h << 5) + h + c.charCodeAt(0)) | 0, 5381).toString(36);
+          if (key !== sourceHash) return true;
+          // 设置 data-converted attr
+          editor
+            .chain()
+            .setNodeSelection(pos)
+            .updateAttributes("codeBlock", {
+              "data-converted": entityId,
+              "data-converted-hash": sourceHash,
+            })
+            .run();
+          found = true;
+          return false;
+        });
+        return found;
+      },
+      markTaskItemConverted: (sourceText: string, taskId: string, sectionKey: string) => {
+        if (!editor) return false;
+        let found = false;
+        const wantText = sourceText.trim();
+        const wantHash = ("checklist|" + wantText).split("").reduce((h, c) => ((h << 5) + h + c.charCodeAt(0)) | 0, 5381).toString(36);
+        editor.state.doc.descendants((node, pos) => {
+          if (found) return false;
+          if (node.type.name !== "taskItem") return true;
+          const text = (node.textContent || "").trim();
+          if (text !== wantText) return true;
+          editor
+            .chain()
+            .setNodeSelection(pos)
+            .updateAttributes("taskItem", {
+              "data-task-id": taskId,
+              "data-section-key": sectionKey,
+            })
+            .run();
+          found = true;
+          return false;
+        });
+        return found;
+      },
+      highlightSource: (kind, sourceHash) => {
+        if (!editor) return false;
+        let found = false;
+        const targetType = kind === "interface" ? "codeBlock" : "taskItem";
+        const prefix = kind === "interface" ? "interface|" : "checklist|";
+        editor.state.doc.descendants((node, pos) => {
+          if (found) return false;
+          if (node.type.name !== targetType) return true;
+          const text = node.textContent || "";
+          const key = (
+            prefix + text.slice(0, 200)
+          ).split("").reduce((h: number, c: string) => ((h << 5) + h + c.charCodeAt(0)) | 0, 5381).toString(36);
+          if (key !== sourceHash) return true;
+          // 临时高亮(500ms)
+          editor
+            .chain()
+            .setNodeSelection(pos)
+            .updateAttributes(targetType, { "data-flash": "true" })
+            .run();
+          // 滚动到
+          try {
+            editor.commands.focus();
+            const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
+            if (dom) {
+              dom.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          } catch {
+            // ignore
+          }
+          setTimeout(() => {
+            if (!editor) return;
+            try {
+              editor
+                .chain()
+                .setNodeSelection(pos)
+                .updateAttributes(targetType, { "data-flash": null })
+                .run();
+            } catch {
+              // editor might be destroyed
+            }
+          }, 1500);
+          found = true;
+          return false;
+        });
+        return found;
       },
     }),
     [editor]

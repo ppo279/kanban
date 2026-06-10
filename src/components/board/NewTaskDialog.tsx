@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { FileText, Plus } from "lucide-react";
 import { useBoardStore } from "@/store/board";
 import {
   PRIORITIES,
@@ -21,8 +22,11 @@ import {
   TASK_TYPES,
   TASK_TYPE_LABEL,
   HTTP_METHODS,
+  DOC_MODE_LABEL,
+  DOC_MODE_COLOR,
   type Priority,
   type TaskType,
+  type DocMode,
   type ApiModule,
 } from "@/types";
 
@@ -87,7 +91,31 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
     setMockPath("");
     setMockResponse(DEFAULT_MOCK_RESPONSE);
     setMockStatusCode(200);
+    // doc-type state
+    setDocMode("free");
+    setNewDocTitle("");
+    setLinkExistingDocId("");
   }, []);
+
+  // ── doc-type 专属 state ──
+  const [docMode, setDocMode] = useState<DocMode>("free");
+  const [newDocTitle, setNewDocTitle] = useState("");
+  const [linkExistingDocId, setLinkExistingDocId] = useState("");
+  const [existingDocs, setExistingDocs] = useState<
+    Array<{ id: string; title: string; mode: DocMode }>
+  >([]);
+
+  useEffect(() => {
+    if (open) {
+      // 拉可关联的文档列表(让用户选已有)
+      fetch("/api/documents", { credentials: "include" })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.ok) setExistingDocs(d.documents);
+        })
+        .catch(() => {});
+    }
+  }, [open]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -100,6 +128,14 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
     if (type === "mock-api") {
       if (!mockPath.trim()) {
         toast.error("Mock API 路径不能为空");
+        return;
+      }
+    }
+
+    // Validate doc-type specific fields
+    if (type === "doc") {
+      if (!linkExistingDocId && !newDocTitle.trim()) {
+        toast.error("选已有文档,或填新文档标题");
         return;
       }
     }
@@ -130,6 +166,11 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
         await createMockInterface(data.task.id);
       }
 
+      // If doc type, create-or-link a document + associate
+      if (type === "doc" && data.task) {
+        await linkOrCreateDoc(data.task.id);
+      }
+
       toast.success("任务已创建");
       onOpenChange(false);
       resetForm();
@@ -137,6 +178,34 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       toast.error("网络错误");
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** 选已有文档关联,或新建一个文档再关联 */
+  async function linkOrCreateDoc(taskId: string) {
+    try {
+      let docId = linkExistingDocId;
+      if (!docId && newDocTitle.trim()) {
+        // 新建一个 free 文档
+        const r = await fetch("/api/documents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ title: newDocTitle.trim(), mode: docMode }),
+        });
+        const data = await r.json();
+        if (data.ok) docId = data.document.id;
+      }
+      if (docId) {
+        await fetch("/api/document-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ documentId: docId, taskId }),
+        });
+      }
+    } catch {
+      toast.warning("任务已创建,但文档关联失败");
     }
   }
 
@@ -366,6 +435,71 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
                   onChange={(e) => setMockStatusCode(Number(e.target.value))}
                   className="h-8 text-xs w-24"
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Doc 配置面板 — type=doc 时显示 */}
+          {type === "doc" && (
+            <div className="rounded-md border border-teal-200 bg-teal-50 p-3 space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-teal-700">
+                <FileText className="h-3.5 w-3.5" />
+                文档配置
+              </div>
+              <p className="text-[10px] text-muted-foreground -mt-1">
+                任务的 deliverable 是一份文档。可以选已有文档关联,或新建一份。
+              </p>
+
+              {/* 选项 1:关联已有 */}
+              <div className="space-y-1">
+                <Label className="text-xs">关联到已有文档</Label>
+                <select
+                  value={linkExistingDocId}
+                  onChange={(e) => {
+                    setLinkExistingDocId(e.target.value);
+                    if (e.target.value) setNewDocTitle("");
+                  }}
+                  className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  <option value="">— 不关联已有 —</option>
+                  {existingDocs.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      [{DOC_MODE_LABEL[d.mode]}] {d.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="text-[10px] text-muted-foreground text-center">— 或 —</div>
+
+              {/* 选项 2:新建 */}
+              <div className="space-y-1">
+                <Label className="text-xs">新建文档(填标题)</Label>
+                <Input
+                  value={newDocTitle}
+                  onChange={(e) => {
+                    setNewDocTitle(e.target.value);
+                    if (e.target.value) setLinkExistingDocId("");
+                  }}
+                  placeholder="例如:用户列表 API 文档"
+                  className="h-8 text-xs"
+                />
+                <div className="flex gap-1">
+                  {(["free", "spec", "tdd"] as DocMode[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setDocMode(m)}
+                      className={`flex-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-all ${
+                        docMode === m
+                          ? "border-teal-500 bg-white ring-1 ring-teal-200"
+                          : "border-slate-200 bg-white/50 hover:border-slate-300"
+                      }`}
+                    >
+                      {DOC_MODE_LABEL[m]}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

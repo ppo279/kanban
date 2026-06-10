@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
-import { Trash2 } from "lucide-react";
+import {
+  Trash2,
+  Plus,
+  ListChecks,
+  CornerDownRight,
+  FileText,
+  Unlink,
+  ExternalLink,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -15,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { useBoardStore } from "@/store/board";
+import { useBoardStore, selectChildrenOf, computeSubtaskProgress } from "@/store/board";
 import {
   PRIORITIES,
   PRIORITY_LABEL,
@@ -23,11 +31,23 @@ import {
   TASK_TYPE_LABEL,
   HTTP_METHODS,
   HTTP_METHOD_COLOR,
+  STATUS_LABEL,
+  DOC_MODE_LABEL,
+  DOC_MODE_COLOR,
   type Priority,
   type TaskType,
+  type Status,
   type Task,
+  type DocMode,
   type ApiInterface,
 } from "@/types";
+
+const SUBTASK_STATUS_BADGE: Record<Status, string> = {
+  todo: "bg-slate-100 text-slate-700 border-slate-300",
+  doing: "bg-amber-100 text-amber-800 border-amber-300",
+  review: "bg-blue-100 text-blue-700 border-blue-300",
+  done: "bg-emerald-100 text-emerald-700 border-emerald-300",
+};
 
 interface Props {
   task: Task | null;
@@ -39,7 +59,9 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   const me = useBoardStore((s) => s.me);
   const users = useBoardStore((s) => s.users);
   const upsertTask = useBoardStore((s) => s.upsertTask);
+  const upsertTasks = useBoardStore((s) => s.upsertTasks);
   const removeTask = useBoardStore((s) => s.removeTask);
+  const allTasks = useBoardStore((s) => s.tasks);
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -49,6 +71,10 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // 子任务相关
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+  const [creatingSubtask, setCreatingSubtask] = useState(false);
+
   // Mock API 关联接口状态
   const [linkedInterfaces, setLinkedInterfaces] = useState<ApiInterface[]>([]);
   const [mockMethod, setMockMethod] = useState<string>("GET");
@@ -57,6 +83,32 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   const [mockStatusCode, setMockStatusCode] = useState(200);
   const [mockTestResult, setMockTestResult] = useState<string | null>(null);
   const [mockTesting, setMockTesting] = useState(false);
+
+  // 关联文档
+  interface LinkedDoc {
+    documentId: string;
+    taskId: string;
+    sectionKey: string | null;
+    document: { id: string; title: string; mode: DocMode; createdAt: number; updatedAt: number };
+  }
+  const [linkedDocs, setLinkedDocs] = useState<LinkedDoc[]>([]);
+  const [linkingDoc, setLinkingDoc] = useState(false);
+  // 关联文档用的小输入:docId
+  const [linkDocInput, setLinkDocInput] = useState("");
+  // 搜索候选
+  const [docSearchResults, setDocSearchResults] = useState<
+    Array<{ id: string; title: string; mode: DocMode }>
+  >([]);
+
+  // 当前 task 的子任务 + 进度
+  const children = useMemo(
+    () => (task ? selectChildrenOf({ tasks: allTasks } as any, task.id) : []),
+    [task, allTasks]
+  );
+  const progress = useMemo(() => computeSubtaskProgress(children), [children]);
+  const hasParent = !!task?.parentId;
+  // 软限 2 层:有 parent 的 task 不允许再添加子任务
+  const canHaveSubtasks = !!task && !hasParent;
 
   useEffect(() => {
     if (task) {
@@ -70,8 +122,102 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
       if (task.type === "mock-api") {
         loadLinkedInterfaces(task.id);
       }
+      // 加载关联的文档
+      loadLinkedDocs(task.id);
     }
   }, [task]);
+
+  async function loadLinkedDocs(taskId: string) {
+    try {
+      const r = await fetch(`/api/tasks/${taskId}/documents`, { credentials: "include" });
+      const data = await r.json();
+      if (data.ok) setLinkedDocs(data.links);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 搜索文档做关联候选 — 输入变化时 debounce
+  useEffect(() => {
+    const q = linkDocInput.trim();
+    if (!q) {
+      setDocSearchResults([]);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/api/documents?q=${encodeURIComponent(q)}`,
+          { credentials: "include" }
+        );
+        const data = await r.json();
+        if (data.ok) {
+          // 过滤掉已经关联的
+          const linkedIds = new Set(linkedDocs.map((l) => l.documentId));
+          setDocSearchResults(
+            data.documents
+              .filter((d: any) => !linkedIds.has(d.id))
+              .slice(0, 8)
+          );
+        }
+      } catch {
+        // ignore
+      }
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [linkDocInput, linkedDocs]);
+
+  async function handleLinkDoc(docId: string) {
+    if (!task) return;
+    setLinkingDoc(true);
+    try {
+      const r = await fetch("/api/document-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ documentId: docId, taskId: task.id }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "关联失败");
+        return;
+      }
+      toast.success("已关联文档");
+      setLinkDocInput("");
+      setDocSearchResults([]);
+      await loadLinkedDocs(task.id);
+    } catch (e: any) {
+      toast.error(`网络错误:${e?.message ?? e}`);
+    } finally {
+      setLinkingDoc(false);
+    }
+  }
+
+  async function handleUnlinkDoc(docId: string) {
+    if (!task) return;
+    try {
+      const r = await fetch(
+        `/api/document-tasks?docId=${encodeURIComponent(docId)}&taskId=${encodeURIComponent(task.id)}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "解除失败");
+        return;
+      }
+      toast.success("已解除关联");
+      await loadLinkedDocs(task.id);
+    } catch {
+      toast.error("网络错误");
+    }
+  }
+
+  function handleJumpToDoc(docId: string) {
+    // 触发全局事件让 DocPanel 切到对应 doc
+    window.dispatchEvent(
+      new CustomEvent("kanban:jump-to-doc", { detail: { docId } })
+    );
+  }
 
   async function loadLinkedInterfaces(taskId: string) {
     try {
@@ -226,6 +372,38 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     }
   }
 
+  async function handleAddSubtask() {
+    if (!task || !newSubtaskTitle.trim()) return;
+    setCreatingSubtask(true);
+    try {
+      const r = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: newSubtaskTitle.trim(),
+          parentId: task.id,
+          assigneeId: me?.id ?? task.assigneeId,
+          priority: "med",
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "创建子任务失败");
+        return;
+      }
+      upsertTask(data.task);
+      // 父任务状态可能 rollup 了(虽然新子任务都是 todo 通常不会)
+      // 但保险起见,刷新父任务
+      setNewSubtaskTitle("");
+      toast.success("子任务已创建");
+    } catch {
+      toast.error("网络错误");
+    } finally {
+      setCreatingSubtask(false);
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -313,6 +491,159 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
               </select>
             </div>
           </div>
+
+          {/* 关联文档面板 */}
+          <div className="rounded-md border border-amber-200 bg-amber-50/50 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
+              <FileText className="h-3.5 w-3.5" />
+              关联文档 ({linkedDocs.length})
+            </div>
+
+            {linkedDocs.length > 0 && (
+              <div className="space-y-0.5">
+                {linkedDocs.map((l) => (
+                  <div
+                    key={l.documentId}
+                    className="flex items-center gap-2 rounded bg-white border border-amber-100 px-2 py-1 text-xs"
+                  >
+                    <FileText className="h-3 w-3 text-amber-500 shrink-0" />
+                    <span className="flex-1 min-w-0 truncate">{l.document.title}</span>
+                    <span
+                      className={`shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium ${DOC_MODE_COLOR[l.document.mode]}`}
+                    >
+                      {DOC_MODE_LABEL[l.document.mode]}
+                    </span>
+                    {l.sectionKey && (
+                      <span className="text-[9px] text-muted-foreground shrink-0">
+                        [{l.sectionKey}]
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToDoc(l.documentId)}
+                      className="text-amber-600 hover:text-amber-700 shrink-0"
+                      title="跳转到文档"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleUnlinkDoc(l.documentId)}
+                      className="text-muted-foreground hover:text-rose-500 shrink-0"
+                      title="解除关联"
+                    >
+                      <Unlink className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 搜索/添加 */}
+            <div className="space-y-1">
+              <div className="flex gap-1">
+                <Input
+                  value={linkDocInput}
+                  onChange={(e) => setLinkDocInput(e.target.value)}
+                  placeholder="搜索文档标题…"
+                  className="h-7 text-xs"
+                />
+              </div>
+              {docSearchResults.length > 0 && (
+                <div className="rounded border bg-white max-h-32 overflow-y-auto">
+                  {docSearchResults.map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => handleLinkDoc(d.id)}
+                      disabled={linkingDoc}
+                      className="w-full flex items-center gap-2 px-2 py-1 text-xs hover:bg-amber-50 text-left"
+                    >
+                      <FileText className="h-3 w-3 text-amber-500 shrink-0" />
+                      <span className="flex-1 truncate">{d.title}</span>
+                      <span
+                        className={`shrink-0 text-[9px] px-1 rounded ${DOC_MODE_COLOR[d.mode]}`}
+                      >
+                        {DOC_MODE_LABEL[d.mode]}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 子任务面板 — 软限 2 层(已经是子任务的不能再加子任务) */}
+          {(canHaveSubtasks || children.length > 0) && (
+            <div className="rounded-md border border-indigo-200 bg-indigo-50/50 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-medium text-indigo-700">
+                  <ListChecks className="h-3.5 w-3.5" />
+                  子任务 ({progress.done}/{progress.total})
+                </div>
+                {hasParent && (
+                  <span className="text-[10px] text-muted-foreground inline-flex items-center gap-0.5">
+                    <CornerDownRight className="h-3 w-3" />
+                    已是子任务
+                  </span>
+                )}
+              </div>
+
+              {/* 子任务列表 */}
+              {children.length > 0 && (
+                <div className="space-y-0.5">
+                  {children.map((c) => (
+                    <div
+                      key={c.id}
+                      className="flex items-center gap-2 rounded bg-white border border-indigo-100 px-2 py-1 text-xs"
+                    >
+                      <span
+                        className={`shrink-0 inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-bold ${SUBTASK_STATUS_BADGE[c.status]}`}
+                      >
+                        {STATUS_LABEL[c.status]}
+                      </span>
+                      <span
+                        className={`flex-1 min-w-0 truncate ${
+                          c.status === "done" ? "line-through text-muted-foreground" : ""
+                        }`}
+                      >
+                        {c.title}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 新增输入框 */}
+              {canHaveSubtasks && (
+                <div className="flex gap-1">
+                  <Input
+                    value={newSubtaskTitle}
+                    onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                    placeholder="新子任务标题…"
+                    className="h-7 text-xs"
+                    maxLength={200}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAddSubtask();
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleAddSubtask}
+                    disabled={creatingSubtask || !newSubtaskTitle.trim()}
+                    className="h-7"
+                  >
+                    <Plus className="h-3 w-3" />
+                    添加
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Mock API 配置面板 */}
           {type === "mock-api" && (

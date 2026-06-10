@@ -78,3 +78,50 @@
   font-weight: 600;
   pointer-events: none;
 }
+
+/* ── 「待审」section 高亮源节点 + 标记已转换 ── */
+
+/* codeBlock 临时高亮(点待审 section 的 item 时,代码块闪一下) */
+.prose pre[data-flash="true"] {
+  outline: 3px solid #f59e0b;
+  outline-offset: 4px;
+  transition: outline-color 0.2s ease;
+  animation: spec-flash 1.5s ease-out;
+}
+
+@keyframes spec-flash {
+  0% { outline-color: #f59e0b; outline-offset: 4px; }
+  100% { outline-color: transparent; outline-offset: 4px; }
+}
+
+/* taskItem 临时高亮 */
+.prose li[data-flash="true"] {
+  background: linear-gradient(90deg, #fef3c7 0%, transparent 100%);
+  animation: spec-flash-task 1.5s ease-out;
+  border-radius: 4px;
+}
+
+@keyframes spec-flash-task {
+  0% { background: #fef3c7; }
+  100% { background: transparent; }
+}
+
+/* codeBlock 已转换标:半透明 + 顶部加 banner */
+.prose pre[data-converted] {
+  position: relative;
+  opacity: 0.85;
+  background: #f0fdf4 !important; /* 淡绿色背景,提示"已被结构化" */
+}
+
+.prose pre[data-converted]::before {
+  content: "✓ 已提取为结构化接口 (id: " attr(data-converted) ")";
+  display: block;
+  font-size: 10px;
+  font-family: ui-sans-serif, system-ui, -apple-system;
+  color: #047857;
+  background: #d1fae5;
+  padding: 2px 8px;
+  border-radius: 4px 4px 0 0;
+  margin-bottom: 4px;
+  font-weight: 500;
+}

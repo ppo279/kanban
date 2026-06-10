@@ -52,6 +52,21 @@ export const TaskItem = Node.create({
         renderHTML: (attrs) =>
           attrs.taskId ? { "data-task-id": attrs.taskId } : {},
       },
+      // 「待审」section 用 — 标记这个 taskItem 已经被 detect 提过
+      // (避免重复弹;不写表示未提)
+      reviewed: {
+        default: null,
+        parseHTML: (el) => el.getAttribute("data-reviewed") || null,
+        renderHTML: (attrs) =>
+          attrs.reviewed ? { "data-reviewed": attrs.reviewed } : {},
+      },
+      // 「待审」section 用 — 标「已衍生 task」时,带 section 信息方便后续查
+      sectionKey: {
+        default: null,
+        parseHTML: (el) => el.getAttribute("data-section-key") || null,
+        renderHTML: (attrs) =>
+          attrs.sectionKey ? { "data-section-key": attrs.sectionKey } : {},
+      },
     };
   },
 
