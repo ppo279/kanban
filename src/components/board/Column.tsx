@@ -10,6 +10,8 @@ interface Props {
   tasks: Task[];
   users: User[];
   onCardClick: (t: Task) => void;
+  /** 当前正在闪的任务 ID(协作文档跳转高亮) */
+  flashTaskId?: string | null;
 }
 
 const STATUS_HEADER: Record<Status, string> = {
@@ -19,7 +21,7 @@ const STATUS_HEADER: Record<Status, string> = {
   done: "border-t-emerald-500",
 };
 
-export function Column({ status, tasks, users, onCardClick }: Props) {
+export function Column({ status, tasks, users, onCardClick, flashTaskId }: Props) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   return (
@@ -50,6 +52,7 @@ export function Column({ status, tasks, users, onCardClick }: Props) {
             task={t}
             assignee={users.find((u) => u.id === t.assigneeId)}
             onClick={onCardClick}
+            flash={flashTaskId === t.id}
           />
         ))}
       </div>

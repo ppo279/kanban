@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Sparkles, Loader2, Key, RefreshCw } from "lucide-react";
+import { Sparkles, Loader2, Key } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,9 +18,9 @@ import {
 import {
   AI_PROVIDERS,
   type AIProvider,
-  getAPIKey,
   hasAPIKey,
 } from "@/lib/ai-keys";
+import { AI_PROVIDER_CONFIG } from "@/lib/aiProviders";
 import type { DocMode } from "@/types";
 
 interface Props {
@@ -30,23 +30,18 @@ interface Props {
   mode: DocMode;
   /** 当前输入的标题(作为生成 prompt 的一部分) */
   title: string;
-  /** 生成成功后回调(content 是 markdown 文本,新建时塞到 initialContent) */
-  onGenerated: (content: string, provider: AIProvider, model: string) => void;
+  /** DocPanel 是否在生成中(用来显示 spinner + disable 按钮) */
+  generating?: boolean;
+  /** 委托给 DocPanel 真正去生成 + 创建 + 打开编辑 */
+  onAdvancedGenerate: (provider: AIProvider, model: string, prompt: string) => void;
   /** 没配 key 时跳到设置 dialog */
   onRequestKeySetup: () => void;
 }
 
+/** 走共享 aiProviders 配置,跟 BE 默认 model 保持同步 */
 const MODEL_OPTIONS: Record<AIProvider, Array<{ id: string; label: string }>> = {
-  minimax: [
-    { id: "MiniMax-Text-01", label: "MiniMax-Text-01(推荐)" },
-    { id: "abab6.5s-chat", label: "abab6.5s-chat" },
-    { id: "abab6.5g-chat", label: "abab6.5g-chat" },
-  ],
-  deepseek: [
-    { id: "deepseek-chat", label: "deepseek-chat(推荐,便宜)" },
-    { id: "deepseek-coder", label: "deepseek-coder(代码更强)" },
-    { id: "deepseek-reasoner", label: "deepseek-reasoner(推理强)" },
-  ],
+  minimax: AI_PROVIDER_CONFIG.minimax.modelOptions,
+  deepseek: AI_PROVIDER_CONFIG.deepseek.modelOptions,
 };
 
 /**
@@ -61,13 +56,13 @@ export function AIGenerateDialog({
   onOpenChange,
   mode,
   title,
-  onGenerated,
+  generating = false,
+  onAdvancedGenerate,
   onRequestKeySetup,
 }: Props) {
   const [provider, setProvider] = useState<AIProvider>("deepseek");
   const [model, setModel] = useState<string>(MODEL_OPTIONS.deepseek[0].id);
   const [prompt, setPrompt] = useState("");
-  const [generating, setGenerating] = useState(false);
   const [hasKey, setHasKey] = useState(false);
 
   // 打开时检查 key、初始化默认值
@@ -86,7 +81,7 @@ export function AIGenerateDialog({
     setModel(MODEL_OPTIONS[provider][0].id);
   }, [provider, open]);
 
-  async function handleGenerate() {
+  function handleGenerate() {
     if (!hasKey) {
       toast.error(`还没配 ${AI_PROVIDERS.find((p) => p.id === provider)?.label} 的 key`);
       return;
@@ -95,41 +90,9 @@ export function AIGenerateDialog({
       toast.error("请先填标题");
       return;
     }
-
-    setGenerating(true);
-    try {
-      const apiKey = await getAPIKey(provider);
-      if (!apiKey) {
-        toast.error("Key 读取失败,请重新配");
-        setHasKey(false);
-        return;
-      }
-      const r = await fetch("/api/ai/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          provider,
-          apiKey,
-          title: title.trim(),
-          prompt: prompt.trim(),
-          mode,
-          model,
-        }),
-      });
-      const data = await r.json();
-      if (!data.ok) {
-        toast.error(data.error ?? "生成失败");
-        return;
-      }
-      toast.success(`已生成 ${data.content.length} 字`);
-      onGenerated(data.content, provider, data.model);
-      onOpenChange(false);
-    } catch (e: any) {
-      toast.error(`生成失败:${e?.message ?? e}`);
-    } finally {
-      setGenerating(false);
-    }
+    // 委托给 DocPanel — 它负责调 LLM + 创建文档 + 打开编辑
+    // dialog 不关闭,等 DocPanel 完成后再关(setAiGenerateOpen(false) 在 handleAdvancedGenerate 成功路径里调)
+    onAdvancedGenerate(provider, model, prompt.trim());
   }
 
   return (

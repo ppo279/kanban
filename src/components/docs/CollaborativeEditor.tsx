@@ -33,6 +33,8 @@ interface Props {
   onSave: (content: string) => Promise<void>;
   /** checklist 行数变化时回调(0 ↔ n) */
   onChecklistChange?: (hasChecklist: boolean) => void;
+  /** checklist 进度统计 — 给文档顶部进度条用 */
+  onChecklistStatsChange?: (stats: { total: number; checked: number }) => void;
 }
 
 /** 暴露给父组件的命令式 API(DocPanel 用) */
@@ -322,6 +324,7 @@ export const CollaborativeEditor = forwardRef<
   cursorColor,
   onSave,
   onChecklistChange,
+  onChecklistStatsChange,
 }, ref) {
   const savedRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -478,6 +481,27 @@ export const CollaborativeEditor = forwardRef<
       editor.off("update", handler);
     };
   }, [editor, onChecklistChange]);
+
+  // 监听 checklist 进度统计(给顶部进度条用)
+  useEffect(() => {
+    if (!editor || !onChecklistStatsChange) return;
+    const compute = () => {
+      let total = 0;
+      let checked = 0;
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === "taskItem") {
+          total++;
+          if (node.attrs.done) checked++;
+        }
+      });
+      onChecklistStatsChange({ total, checked });
+    };
+    editor.on("update", compute);
+    compute(); // 立即推一次,反映当前文档状态
+    return () => {
+      editor.off("update", compute);
+    };
+  }, [editor, onChecklistStatsChange]);
 
   // 暴露命令式 API 给父组件(DocPanel)用
   useImperativeHandle(

@@ -11,9 +11,11 @@ interface Props {
   task: Task;
   assignee?: User;
   onClick?: (t: Task) => void;
+  /** 是否正在被"跳转"高亮(从协作文档点徽章跳过来) */
+  flash?: boolean;
 }
 
-export function TaskCard({ task, assignee, onClick }: Props) {
+export function TaskCard({ task, assignee, onClick, flash = false }: Props) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: task.id,
   });
@@ -30,9 +32,11 @@ export function TaskCard({ task, assignee, onClick }: Props) {
       {...listeners}
       {...attributes}
       onClick={() => !isDragging && onClick?.(task)}
+      data-task-card-id={task.id}
       className={cn(
         "group relative flex items-start gap-2 rounded-md border bg-card p-3 shadow-sm hover:shadow cursor-grab active:cursor-grabbing select-none transition-shadow",
-        isDragging && "ring-2 ring-primary"
+        isDragging && "ring-2 ring-primary",
+        flash && "ring-2 ring-amber-400 shadow-lg shadow-amber-200 animate-pulse"
       )}
     >
       {/* 优先级色条 */}

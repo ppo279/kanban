@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   DndContext,
   PointerSensor,
@@ -43,6 +43,8 @@ export function Board() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  // 协作文档跳转高亮 — TaskItemView 点徽章 → 关文档侧栏 → 滚动到任务卡 → 闪一下
+  const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const byStatus = useMemo(() => selectByStatus({ tasks } as any), [tasks]);
@@ -117,6 +119,31 @@ export function Board() {
     router.push("/login");
   }
 
+  // ── 监听"从协作文档跳到看板任务"事件(DocPanel 转发) ──
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const ce = e as CustomEvent<{ taskId: string }>;
+      const taskId = ce.detail?.taskId;
+      if (!taskId) return;
+      // 1. 关文档侧栏(让看板主区显示)
+      if (sidebarOpen) setSidebarOpen(false);
+      // 2. 滚动到对应 TaskCard
+      const el = document.querySelector(
+        `[data-task-card-id="${taskId}"]`
+      ) as HTMLElement | null;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      // 3. 闪一下高亮
+      setFlashTaskId(taskId);
+      setTimeout(() => {
+        setFlashTaskId((curr) => (curr === taskId ? null : curr));
+      }, 1600);
+    };
+    window.addEventListener("kanban:jump-to-task", onJump);
+    return () => window.removeEventListener("kanban:jump-to-task", onJump);
+  }, [sidebarOpen]);
+
   if (!hydrated) {
     return (
       <div className="min-h-screen flex items-center justify-center text-muted-foreground">
@@ -184,6 +211,7 @@ export function Board() {
                       setSelectedTaskId(t.id);
                       if (!sidebarOpen) setSidebarOpen(true);
                     }}
+                  flashTaskId={flashTaskId}
                 />
               ))}
             </div>

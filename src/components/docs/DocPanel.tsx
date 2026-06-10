@@ -36,7 +36,15 @@ import { getSocketInstance } from "@/hooks/useSocket";
 import { CollaborativeEditor, type CollaborativeEditorHandle } from "./CollaborativeEditor";
 import { AISettingsDialog } from "./AISettingsDialog";
 import { AIGenerateDialog } from "./AIGenerateDialog";
-import { hasAPIKey, getAPIKey, type AIProvider } from "@/lib/ai-keys";
+import { DeleteDocDialog } from "./DeleteDocDialog";
+import {
+  hasAPIKey,
+  getAPIKey,
+  wrapApiKey,
+  resetAIPubkeyCache,
+  type AIProvider,
+} from "@/lib/ai-keys";
+import { resolveModel } from "@/lib/aiProviders";
 import {
   DOC_MODES,
   DOC_MODE_LABEL,
@@ -70,6 +78,38 @@ function hashUserId(id: string): number {
 
 function getCursorColor(userId: string): string {
   return CURSOR_COLORS[hashUserId(userId) % CURSOR_COLORS.length];
+}
+
+/** 文档顶部进度条 — 反映 checklist 行的勾选进度 */
+function ChecklistProgressBar({
+  total,
+  checked,
+}: {
+  total: number;
+  checked: number;
+}) {
+  const pct = total === 0 ? 0 : Math.round((checked / total) * 100);
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-gradient-to-r from-blue-50 to-emerald-50 border border-blue-100">
+      <ListChecks className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+      <span className="text-xs font-medium text-slate-700 shrink-0">
+        Spec 进度
+      </span>
+      <div className="flex-1 h-1.5 bg-white/70 rounded-full overflow-hidden border border-blue-100">
+        <div
+          className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 transition-all duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs font-mono tabular-nums text-slate-700 shrink-0">
+        <span className={checked === total ? "text-emerald-600 font-semibold" : ""}>
+          {checked}
+        </span>
+        <span className="text-muted-foreground"> / {total}</span>
+        <span className="text-muted-foreground ml-1">({pct}%)</span>
+      </span>
+    </div>
+  );
 }
 
 // ── 模式卡片元数据(给"新建文档"弹窗用) ──
@@ -210,6 +250,11 @@ export function DocPanel() {
   // 标记当前文档是否已有 checklist 行(用于空状态文案分情况)
   // DocPanel 不能直接读 editor state(性能 + 时序问题),用一个乐观标记 + 手动更新
   const [hasChecklistRows, setHasChecklistRows] = useState(false);
+  // checklist 进度统计(给文档顶部进度条用)— { total, checked }
+  const [checklistStats, setChecklistStats] = useState<{
+    total: number;
+    checked: number;
+  }>({ total: 0, checked: 0 });
 
   // ── AI 状态 ──
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
@@ -305,7 +350,22 @@ export function DocPanel() {
     };
 
     root.addEventListener("checklist:associate-task", handler);
-    return () => root.removeEventListener("checklist:associate-task", handler);
+
+    // ── 监听"跳到看板任务"事件:TaskItemView 转发到 window,由顶层页面切 tab + 滚动 ──
+    const jumpHandler = (e: Event) => {
+      const ce = e as CustomEvent<{ taskId: string }>;
+      // 转发到 window(顶层监听)— DocPanel 自身不切 tab
+      window.dispatchEvent(
+        new CustomEvent("kanban:jump-to-task", { detail: ce.detail })
+      );
+      toast.info("已跳转到看板对应任务");
+    };
+    root.addEventListener("checklist:jump-to-task", jumpHandler);
+
+    return () => {
+      root.removeEventListener("checklist:associate-task", handler);
+      root.removeEventListener("checklist:jump-to-task", jumpHandler);
+    };
   }, [me]);
 
   // ── Open document dialog ──
@@ -316,6 +376,7 @@ export function DocPanel() {
     setDialogOpen(true);
     setInitialContent("");
     setHasChecklistRows(false); // 乐观重置,CollaborativeEditor mount 后会通过 onChecklistChange 回调更新
+    setChecklistStats({ total: 0, checked: 0 }); // 切文档时清零,等 editor mount 后回调更新
 
     try {
       const r = await fetch(`/api/documents/${doc.id}`, { credentials: "include" });
@@ -367,44 +428,52 @@ export function DocPanel() {
     }
   }
 
-  // ── Create document (with mode) — 通过模态弹窗触发 ──
-  async function handleCreateDoc() {
-    if (!newDocTitle.trim()) {
-      return; // dialog 上按钮已经 disabled,这里兜底
-    }
+  // ── Create document — 底层函数:创建文档 + 自动进编辑 ──
+  // 文档内容已确定(AI 生成完 / 用户手动填好),直接创建并打开编辑 dialog
+  async function handleCreateWithContent(
+    title: string,
+    mode: DocMode,
+    content: string
+  ): Promise<Document | null> {
     try {
-      // 优先用 AI 生成的内容;否则 spec/tdd 模式注入 section 骨架;free 模式空
-      const initialContent =
-        aiGeneratedContent ??
-        (newDocMode === "free" ? "" : buildTemplateContent(newDocMode));
       const r = await fetch("/api/documents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          title: newDocTitle.trim(),
-          content: initialContent,
-          mode: newDocMode,
+          title: title.trim(),
+          content,
+          mode,
         }),
       });
       const data = await r.json();
-      if (data.ok) {
-        setDocuments((prev) => [...prev, data.document]);
-        setNewDocTitle("");
-        setNewDocMode("spec"); // 默认模式恢复 spec
-        setAiGeneratedContent(null);
-        setCreateDialogOpen(false);
-        toast.success(
-          aiGeneratedContent
-            ? `已创建,AI 生成内容已填充`
-            : newDocMode === "free"
-            ? "文档已创建"
-            : `${DOC_MODE_LABEL[newDocMode]}文档已创建,已预置 section 骨架`
-        );
+      if (!data.ok) {
+        toast.error(data.error ?? "创建失败");
+        return null;
       }
-    } catch {
-      toast.error("创建失败");
+      const newDoc: Document = data.document;
+      setDocuments((prev) => [...prev, newDoc]);
+      // 立刻进编辑(列表 +1,内容拉一次,关联任务拉一次)
+      await handleSelectDoc(newDoc);
+      // 关新建 dialog,清表单
+      setCreateDialogOpen(false);
+      setNewDocTitle("");
+      setNewDocMode("spec");
+      setAiGeneratedContent(null);
+      toast.success("文档已创建,进入编辑");
+      return newDoc;
+    } catch (e: any) {
+      toast.error(`创建失败:${e?.message ?? e}`);
+      return null;
     }
+  }
+
+  // ── 手动创建(不 AI)— 走模板骨架 ──
+  function handleCreateDoc() {
+    if (!newDocTitle.trim()) return;
+    const content =
+      newDocMode === "free" ? "" : buildTemplateContent(newDocMode);
+    handleCreateWithContent(newDocTitle.trim(), newDocMode, content);
   }
 
   // 用户切 mode 时,如果之前 AI 生成的内容用的不是新 mode,清掉避免冲突
@@ -416,7 +485,7 @@ export function DocPanel() {
     setNewDocMode(m);
   }
 
-  // ── 一键 AI 生成(主操作):用当前标题直接生成,prompt 为空,走"标题驱动"模式 ──
+  // ── 一键 AI 生成(主操作):标题驱动,生成后直接创建 + 打开编辑 ──
   async function handleQuickGenerate() {
     if (!newDocTitle.trim()) {
       toast.error("请先填标题");
@@ -446,26 +515,185 @@ export function DocPanel() {
         setAiSettingsOpen(true);
         return;
       }
+      // 用 envelope 包装(apiKey 不再走明文 body)
+      // AAD 必须显式带上 model:BE 那边会用同一个 default 填 AAD,不一致会 auth tag 失败
+      const useModel = resolveModel(provider);
+      const enc = await wrapApiKey(apiKey, {
+        provider,
+        model: useModel,
+        mode: newDocMode,
+        title: newDocTitle.trim(),
+        prompt: "",
+      });
       const r = await fetch("/api/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           provider,
-          apiKey,
+          enc,
           title: newDocTitle.trim(),
           prompt: "", // 标题驱动 — prompt 为空,完全靠标题推断
           mode: newDocMode,
+          model: useModel, // 显式传,跟 AAD 里的 model 一致
         }),
       });
       const data = await r.json();
+      // kid 失效(后端重启过)→ 清缓存 + 自动重试一次
+      if (r.status === 401 && String(data.error ?? "").includes("公钥已过期")) {
+        resetAIPubkeyCache();
+        const apiKey2 = await getAPIKey(provider);
+        if (!apiKey2) throw new Error("key 读取失败");
+        const enc2 = await wrapApiKey(apiKey2, {
+          provider,
+          model: useModel,
+          mode: newDocMode,
+          title: newDocTitle.trim(),
+          prompt: "",
+        });
+        const r2 = await fetch("/api/ai/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            provider,
+            enc: enc2,
+            title: newDocTitle.trim(),
+            prompt: "",
+            mode: newDocMode,
+            model: useModel,
+          }),
+        });
+        const data2 = await r2.json();
+        if (!data2.ok) {
+          toast.error(data2.error ?? "生成失败");
+          return;
+        }
+        setAiLastProvider(provider);
+        await handleCreateWithContent(newDocTitle.trim(), newDocMode, data2.content);
+        return;
+      }
       if (!data.ok) {
         toast.error(data.error ?? "生成失败");
         return;
       }
-      setAiGeneratedContent(data.content);
       setAiLastProvider(provider);
-      toast.success(`已生成 ${data.content.length} 字 · ${provider === "minimax" ? "MiniMax" : "DeepSeek"}`);
+      // ★ 直接创建文档 + 进编辑(不再等用户点"创建")
+      await handleCreateWithContent(
+        newDocTitle.trim(),
+        newDocMode,
+        data.content
+      );
+    } catch (e: any) {
+      toast.error(`生成失败:${e?.message ?? e}`);
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
+  // ── 高级 AI 生成(AIGenerateDialog 触发):带 prompt + 选模型,生成后也直接创建 ──
+  async function handleAdvancedGenerate(
+    provider: AIProvider,
+    model: string,
+    prompt: string
+  ) {
+    if (!newDocTitle.trim()) {
+      toast.error("请先填标题");
+      return;
+    }
+    if (newDocMode === "free") {
+      toast.error("自由写作模式不支持 AI 生成");
+      return;
+    }
+    setAiGenerating(true);
+    try {
+      const apiKey = await getAPIKey(provider);
+      if (!apiKey) {
+        toast.error("Key 读取失败,请重新配");
+        setAiSettingsOpen(true);
+        return;
+      }
+      // 用 envelope 包装(apiKey 不再走明文 body)
+      // 用 resolveModel 把 model 归一化,跟 BE 端 AAD 完全一致
+      const useModel = resolveModel(provider, model);
+      const enc = await wrapApiKey(apiKey, {
+        provider,
+        model: useModel,
+        mode: newDocMode,
+        title: newDocTitle.trim(),
+        prompt,
+      });
+      const r = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          provider,
+          enc,
+          title: newDocTitle.trim(),
+          prompt,
+          mode: newDocMode,
+          model: useModel,
+        }),
+      });
+      const data = await r.json();
+      // kid 失效 → 清缓存 + 自动重试一次
+      if (r.status === 401 && String(data.error ?? "").includes("公钥已过期")) {
+        resetAIPubkeyCache();
+        const apiKey2 = await getAPIKey(provider);
+        if (!apiKey2) throw new Error("key 读取失败");
+        const enc2 = await wrapApiKey(apiKey2, {
+          provider,
+          model: useModel,
+          mode: newDocMode,
+          title: newDocTitle.trim(),
+          prompt,
+        });
+        const r2 = await fetch("/api/ai/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            provider,
+            enc: enc2,
+            title: newDocTitle.trim(),
+            prompt,
+            mode: newDocMode,
+            model: useModel,
+          }),
+        });
+        const data2 = await r2.json();
+        if (!data2.ok) {
+          toast.error(data2.error ?? "生成失败");
+          return;
+        }
+        setAiLastProvider(provider);
+        setAiProvider(provider);
+        const created = await handleCreateWithContent(
+          newDocTitle.trim(),
+          newDocMode,
+          data2.content
+        );
+        if (created) setAiGenerateOpen(false);
+        return;
+      }
+      if (!data.ok) {
+        toast.error(data.error ?? "生成失败");
+        return;
+      }
+      setAiLastProvider(provider);
+      setAiProvider(provider);
+      // 直接创建 + 进编辑
+      const created = await handleCreateWithContent(
+        newDocTitle.trim(),
+        newDocMode,
+        data.content
+      );
+      if (created) {
+        // 创建成功 → 关掉高级 dialog
+        setAiGenerateOpen(false);
+      }
+      // 失败保持打开,用户能改 prompt 重试
     } catch (e: any) {
       toast.error(`生成失败:${e?.message ?? e}`);
     } finally {
@@ -474,25 +702,33 @@ export function DocPanel() {
   }
 
   // ── Delete document ──
-  async function handleDeleteDoc(id: string) {
-    if (!confirm("确定删除此文档？关联任务不会被删除。")) return;
-    try {
-      const r = await fetch(`/api/documents/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      const data = await r.json();
-      if (data.ok) {
-        setDocuments((prev) => prev.filter((d) => d.id !== id));
-        if (selectedDoc?.id === id) {
-          setSelectedDoc(null);
-          setDialogOpen(false);
-        }
-        toast.success("已删除");
-      }
-    } catch {
-      toast.error("删除失败");
+  // 用专门的 dialog 替换掉原来的 window.confirm()
+  // - 拿到 doc id → 设置 deleteTarget,DeleteDocDialog 接管
+  // - 真正删除在 DeleteDocDialog 的 onConfirm 里做,完成后关 dialog
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+
+  async function performDeleteDoc(id: string) {
+    const r = await fetch(`/api/documents/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      throw new Error(data.error ?? "删除失败");
     }
+    setDocuments((prev) => prev.filter((d) => d.id !== id));
+    if (selectedDoc?.id === id) {
+      setSelectedDoc(null);
+      setDialogOpen(false);
+    }
+    toast.success("已删除");
+  }
+
+  function handleDeleteClick(doc: Document) {
+    setDeleteTarget({ id: doc.id, title: doc.title });
   }
 
   // ── Switch document mode (历史文档不强制升级,允许手动切) ──
@@ -696,9 +932,10 @@ export function DocPanel() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDeleteDoc(doc.id);
+                  handleDeleteClick(doc);
                 }}
                 className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500"
+                title="删除文档"
               >
                 <Trash2 className="h-3 w-3" />
               </button>
@@ -780,25 +1017,35 @@ export function DocPanel() {
 
           {/* 主区:上 编辑器 / 下 关联任务 */}
           <div className="flex-1 min-h-0 grid grid-rows-[1fr_auto] gap-2 overflow-hidden">
-            {/* 上:编辑器 */}
-            <div className="overflow-hidden relative">
-              {loading ? (
-                <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-                  加载中…
-                </div>
-              ) : selectedDoc && me ? (
-                <CollaborativeEditor
-                  key={selectedDoc.id}
-                  ref={editorRef}
-                  docId={selectedDoc.id}
-                  initialContent={initialContent}
-                  userId={me.id}
-                  userName={me.name}
-                  cursorColor={getCursorColor(me.id)}
-                  onSave={handleSaveDoc}
-                  onChecklistChange={setHasChecklistRows}
+            {/* 上:编辑器 + spec/tdd 模式的顶部进度条 */}
+            <div className="overflow-hidden relative flex flex-col gap-1.5">
+              {/* 进度条 — 只在 spec/tdd 模式 + 有 checklist 时显示 */}
+              {selectedDoc && selectedDoc.mode !== "free" && checklistStats.total > 0 && (
+                <ChecklistProgressBar
+                  total={checklistStats.total}
+                  checked={checklistStats.checked}
                 />
-              ) : null}
+              )}
+              <div className="flex-1 overflow-hidden relative">
+                {loading ? (
+                  <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+                    加载中…
+                  </div>
+                ) : selectedDoc && me ? (
+                  <CollaborativeEditor
+                    key={selectedDoc.id}
+                    ref={editorRef}
+                    docId={selectedDoc.id}
+                    initialContent={initialContent}
+                    userId={me.id}
+                    userName={me.name}
+                    cursorColor={getCursorColor(me.id)}
+                    onSave={handleSaveDoc}
+                    onChecklistChange={setHasChecklistRows}
+                    onChecklistStatsChange={setChecklistStats}
+                  />
+                ) : null}
+              </div>
             </div>
 
             {/* 下:关联任务面板 */}
@@ -1302,20 +1549,27 @@ export function DocPanel() {
         onConfigured={() => setAiKeysTick((t) => t + 1)}
       />
 
-      {/* ── AI 生成 dialog ── */}
+      {/* ── AI 生成 dialog(高级模式)— 只收集参数,真生成由 DocPanel 处理 ── */}
       <AIGenerateDialog
         open={aiGenerateOpen}
         onOpenChange={setAiGenerateOpen}
         mode={newDocMode}
         title={newDocTitle}
-        onGenerated={(content, provider) => {
-          setAiGeneratedContent(content);
-          setAiProvider(provider);
-        }}
+        generating={aiGenerating}
+        onAdvancedGenerate={(provider, model, prompt) =>
+          handleAdvancedGenerate(provider, model, prompt)
+        }
         onRequestKeySetup={() => {
           setAiGenerateOpen(false);
           setAiSettingsOpen(true);
         }}
+      />
+
+      {/* ── 删除文档确认 dialog(替代 window.confirm) ── */}
+      <DeleteDocDialog
+        target={deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        onConfirm={performDeleteDoc}
       />
     </div>
   );

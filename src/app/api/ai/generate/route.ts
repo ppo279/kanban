@@ -2,45 +2,40 @@
 //
 // 职责:
 // 1. 鉴权(必须登录)
-// 2. 接收前端传来的 apiKey(明文,只在这一跳里使用,不持久化)
+// 2. 接收前端传来的 envelope(密文),用本进程私钥解开拿到 apiKey
 // 3. 根据 provider 拼对应 LLM 的 chat completions 请求(都兼容 OpenAI 格式)
 // 4. 返回模型生成的 markdown 内容
 //
-// 不存任何 key,不写日志。
+// 安全:apiKey 只在内存里走完这一跳,从不写日志/不落盘。
+// 信封格式定义见 src/lib/aiEnvelope.ts。
 
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getUserFromCookie } from "@/lib/auth";
+import { getAIPrivateKey } from "@/lib/aiServerKeys";
+import { unwrapApiKey, ENVELOPE_VERSION } from "@/lib/aiEnvelope";
+import { AI_PROVIDER_CONFIG, resolveModel } from "@/lib/aiProviders";
+import type { AIProvider } from "@/lib/ai-keys";
+
+const Envelope = z.object({
+  v: z.literal(ENVELOPE_VERSION),
+  kid: z.string().min(1).max(64),
+  iv: z.string().min(16).max(64), // base64 12 字节 ≈ 16 字符
+  ct: z.string().min(1).max(4096),
+  dek: z.string().min(1).max(1024),
+});
 
 const Body = z.object({
   provider: z.enum(["minimax", "deepseek"]),
-  apiKey: z.string().min(1).max(500),
+  /** 信封(替代旧的 apiKey 明文字段) */
+  enc: Envelope,
   title: z.string().min(1).max(200),
   // 用户写的需求/背景(可空,空就用标题生成)
   prompt: z.string().max(2000).optional().default(""),
   mode: z.enum(["spec", "tdd"]),
-  // 模型 ID(可选,默认按 provider 选一个)
-  model: z.string().max(100).optional(),
+  // 模型 ID — 必传,跟 AAD 里的 model 字段保持一致
+  model: z.string().min(1).max(100),
 });
-
-// MiniMax cn: https://api.minimaxi.com/v1/text/chatcompletion_v2
-// DeepSeek cn: https://api.deepseek.com/v1/chat/completions
-// 两个都兼容 OpenAI chat completions 协议
-const PROVIDER_CONFIG: Record<
-  string,
-  { endpoint: string; defaultModel: string; modelOptions: string[] }
-> = {
-  minimax: {
-    endpoint: "https://api.minimaxi.com/v1/text/chatcompletion_v2",
-    defaultModel: "MiniMax-Text-01",
-    modelOptions: ["MiniMax-Text-01", "abab6.5s-chat", "abab6.5g-chat"],
-  },
-  deepseek: {
-    endpoint: "https://api.deepseek.com/v1/chat/completions",
-    defaultModel: "deepseek-chat",
-    modelOptions: ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
-  },
-};
 
 function buildSystemPrompt(mode: "spec" | "tdd"): string {
   if (mode === "tdd") {
@@ -122,11 +117,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { provider, apiKey, title, prompt, mode, model } = parsed.data;
-  const cfg = PROVIDER_CONFIG[provider];
-  const useModel = model && cfg.modelOptions.includes(model)
-    ? model
-    : cfg.defaultModel;
+  const { provider, enc, title, prompt, mode, model } = parsed.data;
+  // 实际调 LLM 的 model:跟 FE AAD 用同一个 resolveModel 保证一致
+  const useModel = resolveModel(provider as AIProvider, model);
+  const cfg = AI_PROVIDER_CONFIG[provider as AIProvider];
+
+  // 解开 envelope 拿到 apiKey(用 AAD 绑定请求上下文,防 envelope 被换到别的请求里)
+  // AAD 用 FE 传过来的 model 字面值(可能不是 default),保证两端 byte-for-byte 一致
+  let apiKey: string;
+  try {
+    const privKey = await getAIPrivateKey(enc.kid);
+    apiKey = await unwrapApiKey(
+      enc,
+      privKey,
+      { provider, model, mode, title, prompt }
+    );
+  } catch (e: any) {
+    // kid 不匹配 → 客户端缓存的公钥过期了,提示它刷新
+    const msg = String(e?.message ?? e);
+    if (msg.includes("kid")) {
+      return NextResponse.json(
+        { ok: false, error: "公钥已过期,请重新发起请求(客户端会自动重试)" },
+        { status: 401 }
+      );
+    }
+    return NextResponse.json(
+      { ok: false, error: `信封解密失败:${msg}` },
+      { status: 400 }
+    );
+  }
 
   // 拼请求
   const systemPrompt = buildSystemPrompt(mode);
