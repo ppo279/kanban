@@ -215,9 +215,8 @@ export function EditorToolbar({ editor, onAIRequest, aiGenerating }: Props) {
         </>
       )}
 
-      <span className="text-[10px] text-gray-400 hidden md:inline ml-2">
-        Markdown: #标题, **加粗**, *斜体*
-      </span>
+      {/* 砍掉老的 "Markdown: #标题, **加粗**..." 提示字串 —
+          跟 Notion AI 一样,工具栏只放动作按钮,提示性文字塞到 hover tooltip / 新手引导 */}
     </div>
   );
 }

@@ -17,11 +17,14 @@ import {
   Sparkles,
   Key,
   RefreshCw,
+  PanelRightOpen,
+  PanelRightClose,
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { VisuallyHidden } from "@/components/ui/visually-hidden";
 import {
   Dialog,
   DialogContent,
@@ -253,10 +256,12 @@ export function DocPanel() {
     editor: null,
   });
 
-  // ── AI 抽屉(常驻右侧,可折叠) — 替代老的 AIGenerateDialog ──
+  // ── AI 抽屉(独立 Sheet,不再嵌在编辑 Dialog 里) — Notion AI 派
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
+  // ── 右侧 panel rail(待审 / 接口 / 任务)— 默认折叠,沉浸写作
+  const [panelsOpen, setPanelsOpen] = useState(false);
   // AI 状态轮询 tick(显示在线/锁状态用)— 用数字递增触发 useEffect 重读
   const [aiKeysTick, setAiKeysTick] = useState(0);
 
@@ -772,19 +777,26 @@ export function DocPanel() {
         </div>
       )}
 
-      {/* ── Editing Dialog (双栏) ── */}
+      {/* ── Editing Dialog (Notion 派:居中紧凑 + 右侧 panel rail) ── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-7xl max-h-[90vh] flex flex-row p-0 overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 flex-wrap">
+        <DialogContent className="max-w-[min(1100px,calc(100vw-120px))] max-h-[88vh] flex flex-col p-0 overflow-hidden gap-0">
+          {/* 顶栏 — 紧凑两行 */}
+          <DialogHeader className="px-5 py-3 border-b space-y-2">
+            {/* a11y:DialogTitle 必备,Radix 警告要求 DialogContent 至少含一个 DialogTitle
+                视觉上标题由 Input + 模式徽章承担,sr-only 留个屏读节点即可 */}
+            <DialogTitle>
+              <VisuallyHidden>文档编辑器{editingTitle ? ` — ${editingTitle}` : ""}</VisuallyHidden>
+            </DialogTitle>
+            {/* 第一行:标题 + 模式 + 元数据 */}
+            <div className="flex items-center gap-3 min-w-0">
               <Input
                 value={editingTitle}
                 onChange={(e) => setEditingTitle(e.target.value)}
-                className="h-7 text-sm font-semibold border-0 focus-visible:ring-0 px-0 flex-1 min-w-[200px]"
+                className="h-7 text-sm font-semibold border-0 focus-visible:ring-0 px-0 flex-1 min-w-[160px] shadow-none"
                 placeholder="文档标题"
               />
               {selectedDoc && (
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
                   <span
                     className={cn(
                       "text-[10px] px-1.5 py-0.5 rounded font-medium",
@@ -799,7 +811,7 @@ export function DocPanel() {
                       handleSwitchMode(e.target.value as DocMode)
                     }
                     disabled={modeChanging}
-                    className="h-6 text-[10px] rounded border px-1"
+                    className="h-6 text-[10px] rounded border px-1 bg-white"
                     title="切换文档模式"
                   >
                     {DOC_MODES.map((m) => (
@@ -810,67 +822,91 @@ export function DocPanel() {
                   </select>
                 </div>
               )}
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
-                <Users className="h-3 w-3" />
-                {onlineUsers.length + 1}
-              </div>
+              {selectedDoc && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
+                  <Users className="h-3 w-3" />
+                  {onlineUsers.length + 1} 人在线
+                </div>
+              )}
+            </div>
+            {/* 第二行:操作按钮组 + 元数据(在线用户) */}
+            <div className="flex items-center gap-1.5 flex-wrap">
               {/* 导入 checklist 到看板 — spec/tdd 模式才有用 */}
               {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && (
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
-                  className="h-6 text-[10px] gap-1"
+                  variant="ghost"
+                  className="h-7 text-xs gap-1 text-muted-foreground hover:text-foreground"
                   onClick={handleOpenImport}
                   title="把文档里的 checklist 项批量导入到看板(自动建立父-子结构)"
                 >
-                  <ListChecks className="h-3 w-3" />
+                  <ListChecks className="h-3.5 w-3.5" />
                   导入看板
                 </Button>
               )}
-              {/* AI 写作抽屉唤起 — 任何模式都可用(老 AIGenerateDialog 的入口替代) */}
+              {/* Panel rail 切换 */}
+              {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={panelsOpen ? "secondary" : "ghost"}
+                  className="h-7 text-xs gap-1"
+                  onClick={() => setPanelsOpen((o) => !o)}
+                  title="展开 / 收起右侧面板(待审 / 接口 / 任务)"
+                >
+                  <PanelRightOpen className={cn("h-3.5 w-3.5 transition-transform", panelsOpen && "rotate-180")} />
+                  {panelsOpen ? "收起面板" : "面板"}
+                </Button>
+              )}
+              {/* AI 写作 — 改成独立 Sheet,在 Dialog 外的根节点挂载 */}
               {selectedDoc && (
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
-                  className="h-6 text-[10px] gap-1 border-amber-300 text-amber-700 hover:bg-amber-50"
-                  onClick={() => setAiDrawerOpen((o) => !o)}
-                  title="唤起 / 收起右侧 AI 写作抽屉"
+                  className="h-7 text-xs gap-1 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-500 hover:to-orange-600 text-white border-0 shadow-sm"
+                  onClick={() => setAiDrawerOpen(true)}
+                  title="打开 AI 写作助手"
                 >
-                  <Sparkles className="h-3 w-3" />
-                  {aiDrawerOpen ? "收起 AI" : "AI 写作"}
+                  <Sparkles className="h-3.5 w-3.5" />
+                  AI 写作
                 </Button>
               )}
-            </DialogTitle>
-            {onlineUsers.length > 0 && (
-              <div className="flex gap-2 flex-wrap mt-1">
-                {onlineUsers.map((u) => (
-                  <span
-                    key={u.userId}
-                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full text-white"
-                    style={{ backgroundColor: getCursorColor(u.userId) }}
-                  >
-                    {u.userName}
-                  </span>
-                ))}
-              </div>
-            )}
+              <span className="ml-auto" />
+              {/* 在线用户 chips */}
+              {onlineUsers.length > 0 && (
+                <div className="flex gap-1 flex-wrap items-center">
+                  {onlineUsers.map((u) => (
+                    <span
+                      key={u.userId}
+                      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full text-white"
+                      style={{ backgroundColor: getCursorColor(u.userId) }}
+                    >
+                      {u.userName}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* 元数据 — 贴右 */}
+              {selectedDoc?.updatedAt && (
+                <span className="text-[10px] text-muted-foreground shrink-0">
+                  最后更新 {new Date(selectedDoc.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </div>
           </DialogHeader>
 
-          {/* 左:主区(上 编辑器 / 下 关联任务)+ 右侧 AI 抽屉 */}
-          <div className="flex-1 min-w-0 flex flex-row overflow-hidden">
-          {/* 主区:上 编辑器 / 下 关联任务 */}
-          <div className="flex-1 min-w-0 flex flex-col p-3 gap-2 overflow-hidden">
-          <div className="flex-1 min-h-0 grid grid-rows-[1fr_auto] gap-2 overflow-hidden">
-            {/* 上:编辑器 + spec/tdd 模式的顶部进度条 */}
-            <div className="overflow-hidden relative flex flex-col gap-1.5">
-              {/* 进度条 — 只在 spec/tdd 模式 + 有 checklist 时显示 */}
+          {/* 主体:左 编辑器(沉浸) / 右 panel rail(可折叠)— 不要再塞 AI 抽屉 */}
+          <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+            {/* 主区:编辑器 + 顶部 checklist 进度条 — 沉浸模式,撑满 */}
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
               {selectedDoc && selectedDoc.mode !== "free" && (checklistStats?.total ?? 0) > 0 && (
-                <ChecklistProgressBar
-                  total={checklistStats?.total ?? 0}
-                  checked={checklistStats?.checked ?? 0}
-                />
+                <div className="px-5 pt-3">
+                  <ChecklistProgressBar
+                    total={checklistStats?.total ?? 0}
+                    checked={checklistStats?.checked ?? 0}
+                  />
+                </div>
               )}
               <div className="flex-1 overflow-hidden relative">
                 {loading ? (
@@ -897,207 +933,176 @@ export function DocPanel() {
               </div>
             </div>
 
-            {/* 中-1:🆕 待审面板(spec/tdd 模式才有)— 实时检测 JSON 代码块 + checklist 让用户确认 */}
-            {selectedDoc &&
-              (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") &&
-              liveDocJson && (
-                <PendingReviewPanel
-                  documentId={selectedDoc.id}
-                  docJson={liveDocJson}
-                  markCodeBlockConverted={(hash, entityId) =>
-                    editorRef.current?.markCodeBlockConverted(hash, entityId) ?? false
-                  }
-                  markTaskItemConverted={(text, taskId, sectionKey) =>
-                    editorRef.current?.markTaskItemConverted(
-                      text,
-                      taskId,
-                      sectionKey
-                    ) ?? false
-                  }
-                  highlightSource={(kind, hash) =>
-                    editorRef.current?.highlightSource(kind, hash) ?? false
-                  }
-                />
-              )}
-
-            {/* 中-2:结构化接口(spec/tdd 模式才有)— 已应用的接口 */}
-            {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && (
-              <div className="border rounded-md bg-orange-50/20 p-2 max-h-[260px] overflow-y-auto">
-                <SpecInterfaceEditor
-                  documentId={selectedDoc.id}
-                  docMode={selectedDoc.mode}
-                />
+            {/* 右侧 panel rail(默认折叠)— spec/tdd 模式才显示 */}
+            {selectedDoc && (selectedDoc.mode === "spec" || selectedDoc.mode === "tdd") && panelsOpen && (
+              <div className="w-[340px] shrink-0 border-l bg-slate-50/50 flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 border-b bg-white">
+                  <span className="text-xs font-semibold text-muted-foreground">
+                    面板
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0"
+                    onClick={() => setPanelsOpen(false)}
+                    title="收起"
+                  >
+                    <PanelRightClose className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                  {/* 待审面板 */}
+                  {liveDocJson && (
+                    <PendingReviewPanel
+                      documentId={selectedDoc.id}
+                      docJson={liveDocJson}
+                      markCodeBlockConverted={(hash, entityId) =>
+                        editorRef.current?.markCodeBlockConverted(hash, entityId) ?? false
+                      }
+                      markTaskItemConverted={(text, taskId, sectionKey) =>
+                        editorRef.current?.markTaskItemConverted(
+                          text,
+                          taskId,
+                          sectionKey
+                        ) ?? false
+                      }
+                      highlightSource={(kind, hash) =>
+                        editorRef.current?.highlightSource(kind, hash) ?? false
+                      }
+                    />
+                  )}
+                  {/* 结构化接口 */}
+                  <div className="border rounded-md bg-white">
+                    <SpecInterfaceEditor
+                      documentId={selectedDoc.id}
+                      docMode={selectedDoc.mode}
+                    />
+                  </div>
+                  {/* 关联任务 */}
+                  <div className="border rounded-md bg-white">
+                    <div className="flex items-center justify-between px-2 py-1.5 border-b">
+                      <div className="flex items-center gap-1 text-xs font-semibold text-muted-foreground">
+                        <ListChecks className="h-3.5 w-3.5" />
+                        关联任务
+                        <span className="text-[10px] text-muted-foreground">
+                          ({linkedTasks.length})
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">
+                        {hasChecklistRows ? "hover checklist 转任务" : "先加 checklist"}
+                      </span>
+                    </div>
+                    {linkedTasks.length === 0 ? (
+                      <div className="px-3 py-3 text-[11px] text-muted-foreground text-center space-y-2">
+                        {hasChecklistRows ? (
+                          <p>暂无关联任务 — hover checklist 行,点 + 任务 按钮</p>
+                        ) : (
+                          <>
+                            <p>暂无关联任务</p>
+                            <p className="text-[10px] text-muted-foreground/80">
+                              在编辑器里输入
+                              <span className="font-mono mx-1 px-1 rounded bg-slate-200 text-slate-700">- [ ]</span>
+                              + 内容按回车
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs mx-auto"
+                              onClick={handleInsertChecklist}
+                            >
+                              <Plus className="h-3 w-3 mr-1" />
+                              插入一行 checklist
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="divide-y">
+                        {linkedTasks.map((link) => {
+                          const t = resolveTask(link);
+                          const assignee = users.find((u) => u.id === t.assigneeId);
+                          const isParent = link.sectionKey === "__parent__";
+                          return (
+                            <div
+                              key={link.taskId}
+                              className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 group cursor-pointer"
+                              onClick={() => {
+                                setDialogOpen(false);
+                                setTimeout(() => {
+                                  window.dispatchEvent(
+                                    new CustomEvent("kanban:jump-to-task", {
+                                      detail: { taskId: link.taskId },
+                                    })
+                                  );
+                                }, 100);
+                              }}
+                              title="点跳到看板"
+                            >
+                              <span
+                                className={cn(
+                                  "shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold text-white",
+                                  t.status === "todo" && "bg-slate-400",
+                                  t.status === "doing" && "bg-amber-500",
+                                  t.status === "review" && "bg-blue-500",
+                                  t.status === "done" && "bg-emerald-500"
+                                )}
+                              >
+                                {STATUS_LABEL[t.status]}
+                              </span>
+                              {isParent ? (
+                                <span
+                                  className="shrink-0 inline-flex items-center gap-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 px-1 py-0.5 text-[9px] font-medium"
+                                  title="这是从本 spec 导入时创建的父任务"
+                                >
+                                  <ListChecks className="h-2.5 w-2.5" />
+                                  父
+                                </span>
+                              ) : link.sectionKey ? (
+                                <span
+                                  className="shrink-0 inline-flex items-center rounded bg-sky-50 text-sky-700 border border-sky-200 px-1 py-0.5 text-[9px] font-medium"
+                                  title={`从本 spec 的「${link.sectionKey}」section 衍生`}
+                                >
+                                  {link.sectionKey}
+                                </span>
+                              ) : null}
+                              <span className="flex-1 truncate font-medium">
+                                {t.title}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {assignee?.name ?? "—"}
+                              </span>
+                              <span
+                                className={cn(
+                                  "shrink-0 text-[9px] px-1 rounded",
+                                  t.priority === "high" && "bg-rose-100 text-rose-700",
+                                  t.priority === "med" && "bg-amber-100 text-amber-700",
+                                  t.priority === "low" && "bg-emerald-100 text-emerald-700"
+                                )}
+                              >
+                                {PRIORITY_LABEL[t.priority]}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUnlinkTask(link.taskId);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-red-500 transition-opacity"
+                                title="解除关联(不删除任务)"
+                              >
+                                <Unlink className="h-3 w-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
-
-            {/* 下:关联任务面板 */}
-            <div className="border rounded-md bg-slate-50/50 max-h-[180px] overflow-y-auto">
-              <div className="flex items-center justify-between px-2 py-1.5 border-b bg-white sticky top-0 z-10">
-                <div className="flex items-center gap-1 text-xs font-semibold text-muted-foreground">
-                  <ListChecks className="h-3.5 w-3.5" />
-                  关联任务
-                  <span className="text-[10px] text-muted-foreground">
-                    ({linkedTasks.length})
-                  </span>
-                </div>
-                <span className="text-[10px] text-muted-foreground">
-                  {hasChecklistRows
-                    ? "hover checklist 行,点 + 任务 一键转任务"
-                    : "先在编辑器里加 checklist 行,再转任务"}
-                </span>
-              </div>
-              {linkedTasks.length === 0 ? (
-                <div className="px-3 py-3 text-[11px] text-muted-foreground text-center space-y-2">
-                  {hasChecklistRows ? (
-                    <>
-                      <p>暂无关联任务</p>
-                      <p className="text-[10px] text-muted-foreground/80">
-                        提示:hover 编辑器里的 checklist 行,点右侧出现的
-                        <span className="font-mono mx-1 px-1 rounded bg-slate-200 text-slate-700">+ 任务</span>
-                        按钮
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p>暂无关联任务</p>
-                      <p className="text-[10px] text-muted-foreground/80">
-                        步骤 1:在编辑器里加一行 checklist(输入
-                        <span className="font-mono mx-1 px-1 rounded bg-slate-200 text-slate-700">- [ ]</span>
-                        + 内容按回车,或点下方按钮)
-                      </p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs mx-auto"
-                        onClick={handleInsertChecklist}
-                      >
-                        <Plus className="h-3 w-3 mr-1" />
-                        帮我插入一行 checklist
-                      </Button>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="divide-y">
-                  {linkedTasks.map((link) => {
-                    const t = resolveTask(link);
-                    const assignee = users.find((u) => u.id === t.assigneeId);
-                    // 父任务标签:__parent__ sectionKey 是 spec import 出来时给父任务用的标识
-                    const isParent = link.sectionKey === "__parent__";
-                    return (
-                      <div
-                        key={link.taskId}
-                        className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-white group cursor-pointer"
-                        onClick={() => {
-                          // 触发看板跳转 + 关闭当前 doc 对话框
-                          setDialogOpen(false);
-                          setTimeout(() => {
-                            window.dispatchEvent(
-                              new CustomEvent("kanban:jump-to-task", {
-                                detail: { taskId: link.taskId },
-                              })
-                            );
-                          }, 100);
-                        }}
-                        title="点跳到看板"
-                      >
-                        <span
-                          className={cn(
-                            "shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold text-white",
-                            t.status === "todo" && "bg-slate-400",
-                            t.status === "doing" && "bg-amber-500",
-                            t.status === "review" && "bg-blue-500",
-                            t.status === "done" && "bg-emerald-500"
-                          )}
-                        >
-                          {STATUS_LABEL[t.status]}
-                        </span>
-                        {/* 父子标识 */}
-                        {isParent ? (
-                          <span
-                            className="shrink-0 inline-flex items-center gap-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 px-1 py-0.5 text-[9px] font-medium"
-                            title="这是从本 spec 导入时创建的父任务"
-                          >
-                            <ListChecks className="h-2.5 w-2.5" />
-                            父
-                          </span>
-                        ) : link.sectionKey ? (
-                          <span
-                            className="shrink-0 inline-flex items-center rounded bg-sky-50 text-sky-700 border border-sky-200 px-1 py-0.5 text-[9px] font-medium"
-                            title={`从本 spec 的「${link.sectionKey}」section 衍生`}
-                          >
-                            {link.sectionKey}
-                          </span>
-                        ) : null}
-                        <span className="flex-1 truncate font-medium">
-                          {t.title}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground shrink-0">
-                          {assignee?.name ?? "—"}
-                        </span>
-                        <span
-                          className={cn(
-                            "shrink-0 text-[9px] px-1 rounded",
-                            t.priority === "high" &&
-                              "bg-rose-100 text-rose-700",
-                            t.priority === "med" &&
-                              "bg-amber-100 text-amber-700",
-                            t.priority === "low" &&
-                              "bg-emerald-100 text-emerald-700"
-                          )}
-                        >
-                          {PRIORITY_LABEL[t.priority]}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleUnlinkTask(link.taskId);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-red-500 transition-opacity"
-                          title="解除关联(不删除任务)"
-                        >
-                          <Unlink className="h-3 w-3" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           </div>
-          </div>
-          {/* 右:AI 抽屉(常驻)— 编辑器 ✨ 按钮唤起,内容直接 setContent 到编辑器 */}
-          {selectedDoc && (
-            <AIDrawer
-              open={aiDrawerOpen}
-              onOpenChange={setAiDrawerOpen}
-              mode={selectedDoc.mode === "free" ? "spec" : selectedDoc.mode}
-              title={selectedDoc.title}
-              onGeneratingChange={setAiGenerating}
-              onApply={handleAIApply}
-              onRequestKeySetup={() => setAiSettingsOpen(true)}
-            />
-          )}
-          </div>
-
-          <DialogFooter className="flex items-center justify-between sm:justify-between border-t px-4 py-2">
-            <span className="text-[10px] text-muted-foreground">
-              {selectedDoc?.updatedAt
-                ? `最后更新: ${new Date(selectedDoc.updatedAt).toLocaleString("zh-CN")}`
-                : ""}
-            </span>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setDialogOpen(false)}
-              >
-                关闭
-              </Button>
-            </div>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1380,6 +1385,40 @@ export function DocPanel() {
         onOpenChange={setAiSettingsOpen}
         onConfigured={() => setAiKeysTick((t) => t + 1)}
       />
+
+      {/* ── AI 写作抽屉(独立 Sheet,从 Dialog 拆出来)— Notion AI 风格
+          关键修复:不再嵌在编辑 Dialog 里,避免双层模态的 z-index/焦点打架
+          用 fixed 容器包住 AIDrawer,撑满屏幕高度,AIDrawer 内部 h-full 自动适配 ── */}
+      {selectedDoc && (
+        <>
+          {/* 遮罩 — 半透明黑,AIDrawer 打开时显示 */}
+          {aiDrawerOpen && (
+            <div
+              className="fixed inset-0 z-40 bg-black/30 transition-opacity"
+              onClick={() => setAiDrawerOpen(false)}
+              aria-hidden
+            />
+          )}
+          {/* 抽屉容器 — fixed 右侧,撑满屏幕 */}
+          <div
+            className={cn(
+              "fixed right-0 top-0 bottom-0 z-50 transition-transform duration-200 ease-out shadow-2xl",
+              aiDrawerOpen ? "translate-x-0" : "translate-x-full pointer-events-none"
+            )}
+            style={{ width: "320px" }}
+          >
+            <AIDrawer
+              open={aiDrawerOpen}
+              onOpenChange={setAiDrawerOpen}
+              mode={selectedDoc.mode === "free" ? "spec" : selectedDoc.mode}
+              title={selectedDoc.title}
+              onGeneratingChange={setAiGenerating}
+              onApply={handleAIApply}
+              onRequestKeySetup={() => setAiSettingsOpen(true)}
+            />
+          </div>
+        </>
+      )}
 
       {/* ── 删除文档确认 dialog(替代 window.confirm) ── */}
       <DeleteDocDialog
