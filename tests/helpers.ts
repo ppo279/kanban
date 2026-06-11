@@ -30,3 +30,25 @@ export async function loginAs(userId: string, password = "test1234") {
 export function clearAuth() {
   globalThis.__cookieStore__.delete("sid");
 }
+
+/** 测试用 demo workspace id(跟 seed.ts 里 DEMO_WORKSPACE_ID 一致) */
+export const TEST_WORKSPACE_ID = "ws_demo";
+
+/** 测试 helper:确保 demo workspace 存在(每个 test 调,幂等) */
+export async function ensureTestWorkspace() {
+  const { db, schema } = await import("@/lib/db");
+  const { eq } = await import("drizzle-orm");
+  const existing = await db
+    .select()
+    .from(schema.workspaces)
+    .where(eq(schema.workspaces.id, TEST_WORKSPACE_ID));
+  if (existing.length === 0) {
+    await db.insert(schema.workspaces).values({
+      id: TEST_WORKSPACE_ID,
+      name: "test workspace",
+      background: "for vitest",
+      createdById: "u_frontend",
+    });
+  }
+  return TEST_WORKSPACE_ID;
+}

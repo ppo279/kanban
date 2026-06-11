@@ -50,6 +50,16 @@ export async function PATCH(
     return NextResponse.json({ ok: false, error: "无权编辑此任务" }, { status: 403 });
   }
 
+  // 多项目防御：query 带 ?workspaceId= 必须跟 task.workspaceId 一致
+  // 防止别 ws 的 task id 被当 URL 误改
+  const urlWorkspaceId = req.nextUrl.searchParams.get("workspaceId");
+  if (urlWorkspaceId && urlWorkspaceId !== t.workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "任务不在该工作区" },
+      { status: 403 }
+    );
+  }
+
   const updates = { ...parsed.data, updatedAt: new Date() };
   await db.update(schema.tasks).set(updates).where(eq(schema.tasks.id, id));
 
@@ -65,7 +75,7 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getUserFromCookie();
@@ -83,6 +93,14 @@ export async function DELETE(
   const t = existing[0];
   if (t.createdById !== user.id && t.assigneeId !== user.id) {
     return NextResponse.json({ ok: false, error: "无权删除此任务" }, { status: 403 });
+  }
+  // 多项目防御：query 带 ?workspaceId= 必须跟 task.workspaceId 一致
+  const urlWorkspaceId = req.nextUrl.searchParams.get("workspaceId");
+  if (urlWorkspaceId && urlWorkspaceId !== t.workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "任务不在该工作区" },
+      { status: 403 }
+    );
   }
   await db.delete(schema.tasks).where(eq(schema.tasks.id, id));
   emitToBoard("task:deleted", { id });

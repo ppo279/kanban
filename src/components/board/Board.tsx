@@ -11,7 +11,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { Plus, LogOut, PanelRightOpen, Settings } from "lucide-react";
+import { Plus, LogOut, PanelRightOpen } from "lucide-react";
 import { toast } from "sonner";
 import { Column } from "./Column";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -26,7 +26,8 @@ import { between } from "@/lib/fractional";
 import { STATUSES, ROLE_COLOR, ROLE_LABEL, type Task, type Status } from "@/types";
 import { useRouter } from "next/navigation";
 import { DocSidebar } from "@/components/docs/DocSidebar";
-import { ProjectSettingsDialog } from "@/components/project/ProjectSettingsDialog";
+import { CreateWorkspaceWizard } from "@/components/workspace/CreateWorkspaceWizard";
+import { WorkspaceSwitcher } from "@/components/workspace/WorkspaceSwitcher";
 
 export function Board() {
   const router = useRouter();
@@ -36,8 +37,28 @@ export function Board() {
   const hydrated = useBoardStore((s) => s.hydrated);
   const moveTaskLocal = useBoardStore((s) => s.moveTaskLocal);
   const upsertTask = useBoardStore((s) => s.upsertTask);
+  // ── workspace 状态(轮 3) ──
+  const workspaces = useBoardStore((s) => s.workspaces);
+  const currentWorkspaceId = useBoardStore((s) => s.currentWorkspaceId);
+  const workspacesHydrated = useBoardStore((s) => s.workspacesHydrated);
+  const setWorkspaces = useBoardStore((s) => s.setWorkspaces);
+  const setCurrentWorkspaceId = useBoardStore((s) => s.setCurrentWorkspaceId);
 
   useSocket();
+
+  // ── 拉 workspace 列表(只拉一次) ──
+  useEffect(() => {
+    if (workspacesHydrated) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/workspaces", { credentials: "include" });
+        const data = await r.json();
+        if (data.ok) setWorkspaces(data.workspaces);
+      } catch {
+        // 静默失败 — 让用户在 wizard 看到错误
+      }
+    })();
+  }, [workspacesHydrated, setWorkspaces]);
 
   const [newOpen, setNewOpen] = useState(false);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
@@ -47,8 +68,57 @@ export function Board() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   // 协作文档跳转高亮 — TaskItemView 点徽章 → 关文档侧栏 → 滚动到任务卡 → 闪一下
   const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
-  // 项目设置 dialog 开关
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 4 步向导开关
+  const [wizardOpen, setWizardOpen] = useState(false);
+  // 首次进入 + 没 ws + 已经 hydrate 过 → 强制弹向导
+  const [forceWizard, setForceWizard] = useState(false);
+  useEffect(() => {
+    if (workspacesHydrated && workspaces.length === 0) {
+      setForceWizard(true);
+      setWizardOpen(true);
+    }
+  }, [workspacesHydrated, workspaces.length]);
+
+  async function handleCreateNew() {
+    setWizardOpen(true);
+  }
+  async function handleSwitch(id: string) {
+    if (id === currentWorkspaceId) return;
+    setCurrentWorkspaceId(id);
+    // 切 ws 后清掉 tasks(让 byStatus 不带老数据)
+    // 真实 fetch 留给轮 4
+    // toast 提示一下
+    const w = workspaces.find((x) => x.id === id);
+    if (w) toast.success(`已切换到「${w.name}」`);
+  }
+  async function handleWsCreated(w: any) {
+    // 把新 ws 塞进 list,自动切到它
+    setWorkspaces([...workspaces, w]);
+    setCurrentWorkspaceId(w.id);
+    setForceWizard(false);
+    setWizardOpen(false);
+    toast.success(`已创建并切到「${w.name}」`);
+  }
+  async function handleDeleteWs(id: string) {
+    try {
+      const r = await fetch(`/api/workspaces/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        toast.error(data.error ?? "删除失败");
+        return;
+      }
+      setWorkspaces(workspaces.filter((w) => w.id !== id));
+      if (id === currentWorkspaceId) {
+        setCurrentWorkspaceId(workspaces.find((w) => w.id !== id)?.id ?? null);
+      }
+      toast.success("项目已删除");
+    } catch (e: any) {
+      toast.error(`网络错误: ${e?.message ?? e}`);
+    }
+  }
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const byStatus = useMemo(() => selectByStatus({ tasks } as any), [tasks]);
@@ -200,20 +270,19 @@ export function Board() {
           <span className="text-xs text-muted-foreground">实时协作</span>
         </div>
         <div className="flex items-center gap-3">
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            currentId={currentWorkspaceId}
+            onSwitch={handleSwitch}
+            onCreateNew={handleCreateNew}
+            onDelete={handleDeleteWs}
+          />
           <Button
             variant={sidebarOpen ? "default" : "outline"}
             size="sm"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             <PanelRightOpen className="mr-1 h-4 w-4" /> 文档
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSettingsOpen(true)}
-            title="项目设置"
-          >
-            <Settings className="h-4 w-4" />
           </Button>
           <Button onClick={() => setNewOpen(true)} size="sm">
             <Plus className="mr-1 h-4 w-4" /> 新建任务
@@ -287,7 +356,14 @@ export function Board() {
 <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
       <TaskDetailDialog task={detailTask} open={detailOpen} onOpenChange={setDetailOpen} />
       <DocDetailDialog />
-      <ProjectSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <CreateWorkspaceWizard
+        open={wizardOpen}
+        onOpenChange={(o) => {
+          setWizardOpen(o);
+          if (!o) setForceWizard(false);
+        }}
+        onCreated={handleWsCreated}
+      />
     </div>
   );
 }

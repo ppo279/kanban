@@ -13,6 +13,9 @@ const DEFAULT_USERS: Array<{
   { id: "u_testing", name: "测试工程师", role: "testing" },
 ];
 
+/** demo workspace 的固定 id(只在 demo 场景用,生产用 nanoid) */
+export const DEMO_WORKSPACE_ID = "ws_demo";
+
 export async function seedUsers() {
   const password = process.env.DEFAULT_PASSWORD ?? "kanban123";
   const hash = await bcrypt.hash(password, 10);
@@ -41,9 +44,33 @@ export async function seedUsers() {
   return { password, created };
 }
 
+/** 兜底建 demo workspace(id 固定),给 demo 任务挂在下面
+ *  不会覆盖已有 workspace — 用 INSERT OR IGNORE
+ */
+async function ensureDemoWorkspace() {
+  const existing = await db
+    .select()
+    .from(schema.workspaces)
+    .where(eq(schema.workspaces.id, DEMO_WORKSPACE_ID));
+  if (existing.length === 0) {
+    await db.insert(schema.workspaces).values({
+      id: DEMO_WORKSPACE_ID,
+      name: "kanban (demo)",
+      background: "3 人小队的多人协作平台 demo workspace,含 8 个演示任务。",
+      goals: ["支持 3 人实时协作", "降低沟通成本"],
+      nonGoals: ["不做权限系统"],
+      techStack: ["Next.js", "Tiptap", "Yjs", "Drizzle"],
+      createdById: "u_backend",
+    });
+    console.log(`[seed] inserted demo workspace (${DEMO_WORKSPACE_ID})`);
+  }
+}
+
 export async function ensureDemoTasks() {
   const existing = await db.select().from(schema.tasks);
   if (existing.length > 0) return;
+
+  await ensureDemoWorkspace();
 
   const now = Date.now();
   const step = 1000 * 1000; // 1e6, 拉得开间距
@@ -119,6 +146,7 @@ export async function ensureDemoTasks() {
       priority: t.priority,
       assigneeId: t.assigneeId,
       createdById: t.createdById,
+      workspaceId: DEMO_WORKSPACE_ID,
       position: pos,
     });
     pos += step;

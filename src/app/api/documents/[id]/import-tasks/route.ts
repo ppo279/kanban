@@ -105,6 +105,8 @@ export async function POST(
   }
 
   // ── 3. 批量创建:父任务 + 子任务 ──
+  // workspaceId 从 doc 直接拿(已经 SELECT 过了)
+  const workspaceId = doc.workspaceId;
   const now = Date.now();
   const parentId = nanoid(12);
   const parentRow = {
@@ -119,6 +121,7 @@ export async function POST(
     parentId: null,
     // drizzle mode:"json" 自动处理,直接传 string[]
     tags: [] as string[],
+    workspaceId,
     position: newPosition(),
     createdAt: new Date(now),
     updatedAt: new Date(now),
@@ -139,6 +142,7 @@ export async function POST(
       createdById: user.id,
       parentId,
       tags: [] as string[],
+      workspaceId,
       position: newPosition(),
       createdAt: new Date(now),
       updatedAt: new Date(now),

@@ -71,6 +71,15 @@ export async function PATCH(
     return NextResponse.json({ ok: false, error: "文档不存在" }, { status: 404 });
   }
 
+  // 多项目防御：query 带 ?workspaceId= 必须跟 doc.workspaceId 一致
+  const urlWorkspaceId = req.nextUrl.searchParams.get("workspaceId");
+  if (urlWorkspaceId && urlWorkspaceId !== existing[0].workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "文档不在该工作区" },
+      { status: 403 }
+    );
+  }
+
   const updates = { ...parsed.data, updatedAt: new Date() };
   await db.update(schema.documents).set(updates).where(eq(schema.documents.id, id));
 
@@ -105,6 +114,15 @@ export async function DELETE(
     .limit(1);
   if (existing.length === 0) {
     return NextResponse.json({ ok: false, error: "文档不存在" }, { status: 404 });
+  }
+
+  // 多项目防御：query 带 ?workspaceId= 必须跟 doc.workspaceId 一致
+  const urlWorkspaceId = _req.nextUrl.searchParams.get("workspaceId");
+  if (urlWorkspaceId && urlWorkspaceId !== existing[0].workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "文档不在该工作区" },
+      { status: 403 }
+    );
   }
 
   await db.delete(schema.documents).where(eq(schema.documents.id, id));

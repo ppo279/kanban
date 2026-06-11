@@ -66,10 +66,15 @@ export async function POST(
   if (!doc) {
     return NextResponse.json({ ok: false, error: "关联文档不存在" }, { status: 404 });
   }
+  // 多项目隔离:module 必须在同一个 workspace
+  const workspaceId = doc.workspaceId;
 
-  // 拿一个 module(默认 spec 文档同名),不存在就建
+  // 拿一个 module(默认 spec 文档同名),且必须在同一 workspace 下;不存在就建
   let moduleId: string | null = null;
-  const allModules = await db.select().from(schema.apiModules);
+  const allModules = await db
+    .select()
+    .from(schema.apiModules)
+    .where(eq(schema.apiModules.workspaceId, workspaceId));
   const matched = allModules.find((m) => m.name === doc.title);
   if (matched) {
     moduleId = matched.id;
@@ -77,6 +82,7 @@ export async function POST(
     const newModId = nanoid(12);
     await db.insert(schema.apiModules).values({
       id: newModId,
+      workspaceId,
       name: doc.title,
       description: `从 spec「${doc.title}」衍生`,
       responseWrapper: null,
@@ -101,6 +107,7 @@ export async function POST(
     createdById: user.id,
     parentId: null,
     tags: [] as string[],
+    workspaceId,
     position: newPosition(),
     createdAt: new Date(now),
     updatedAt: new Date(now),

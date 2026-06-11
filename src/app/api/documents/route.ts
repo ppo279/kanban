@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db, schema } from "@/lib/db";
 import { getUserFromCookie } from "@/lib/auth";
 import { nanoid } from "nanoid";
-import { like, or } from "drizzle-orm";
+import { and, eq, like, or } from "drizzle-orm";
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromCookie();
@@ -11,12 +11,40 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim();
+  // 必传 ?workspaceId= —— 文档按 ws 隔离
+  const workspaceId = searchParams.get("workspaceId");
+  if (!workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "缺少 workspaceId" },
+      { status: 400 }
+    );
+  }
+  // 校验 ws 存在
+  const [ws] = await db
+    .select({ id: schema.workspaces.id })
+    .from(schema.workspaces)
+    .where(eq(schema.workspaces.id, workspaceId))
+    .limit(1);
+  if (!ws) {
+    return NextResponse.json(
+      { ok: false, error: "工作区不存在" },
+      { status: 404 }
+    );
+  }
 
-  // 不传 q 走原逻辑(全量)
-  // 传 q 走 title LIKE 模糊匹配 — 用来给 TaskDetailDialog 搜文档关联候选
-  let query = db.select().from(schema.documents).$dynamic();
+  // 始终按 workspaceId 过滤;q 模糊搜只在该 ws 范围内
+  let query = db
+    .select()
+    .from(schema.documents)
+    .where(eq(schema.documents.workspaceId, workspaceId))
+    .$dynamic();
   if (q) {
-    query = query.where(like(schema.documents.title, `%${q}%`));
+    query = query.where(
+      and(
+        eq(schema.documents.workspaceId, workspaceId),
+        like(schema.documents.title, `%${q}%`)
+      )
+    );
   }
   const rows = await query.orderBy(schema.documents.updatedAt);
 
@@ -39,6 +67,8 @@ const CreateBody = z.object({
   content: z.string().max(100000).nullable().optional(),
   mode: z.enum(["free", "spec", "tdd"]).optional(),
   specTemplate: z.string().max(20000).nullable().optional(),
+  /** 必传,文档归属 ws */
+  workspaceId: z.string().min(1).max(64),
 });
 
 export async function POST(req: NextRequest) {
@@ -53,12 +83,29 @@ export async function POST(req: NextRequest) {
   }
   const parsed = CreateBody.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: "参数错误" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "参数错误", detail: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  // 校验 ws 存在
+  const [ws] = await db
+    .select({ id: schema.workspaces.id })
+    .from(schema.workspaces)
+    .where(eq(schema.workspaces.id, parsed.data.workspaceId))
+    .limit(1);
+  if (!ws) {
+    return NextResponse.json(
+      { ok: false, error: "工作区不存在" },
+      { status: 404 }
+    );
   }
 
   const now = Date.now();
   const row = {
     id: nanoid(12),
+    workspaceId: parsed.data.workspaceId,
     title: parsed.data.title,
     content: parsed.data.content ?? "",
     mode: parsed.data.mode ?? "free",

@@ -36,6 +36,10 @@ export const tasks = sqliteTable("tasks", {
   // 标签 — 暂时不实现 UI(为将来 sprint 预留),先存着
   // 用 JSON 数组形式,SQLite 端就是 text
   tags: text("tags", { mode: "json" }).$type<string[]>().default([]),
+  // 所属 workspace — 多项目隔离,删 workspace 级联清掉
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
   position: real("position").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
@@ -58,6 +62,9 @@ export const sessions = sqliteTable("sessions", {
 
 export const apiModules = sqliteTable("api_modules", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
   responseWrapper: text("response_wrapper"),
@@ -105,6 +112,9 @@ export const apiInterfaces = sqliteTable("api_interfaces", {
 
 export const documents = sqliteTable("documents", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   content: text("content"),
   mode: text("mode", { enum: ["free", "spec", "tdd"] })
@@ -170,33 +180,40 @@ export const documentTasks = sqliteTable("document_tasks", {
 });
 
 /**
- * 项目设置 — 单例表
+ * Workspace(项目 / 工作区)
  *
- * 单项目多人协作平台用,只有一行 (id=1)。字段:
- *   - name:项目名(展示用,任意 3 人都能改)
- *   - background:项目背景/介绍 — 自由文本,留项目元信息
- *   - goals:string[] — 项目目标(结构化,适合后续给 AI 当 context)
- *   - nonGoals:string[] — 明确不做的事(防 scope creep,适合给 AI 提示)
- *   - techStack:string[] — 技术栈标签(展示 + 筛选,后端不强校验)
- *   - updatedAt / updatedById:谁最后改的
+ * 平台现在支持多项目并存。每个 workspace 是一组 task/document/api 的隔离容器。
+ * 3 人共享所有 workspace(无 owner 概念,平等),任意人都能新建/编辑/删除。
  *
- * 设计选择:
- *   - 单例用 PRIMARY KEY CHECK (id = 1) 约束,避免误插多行
- *   - tags / 数组用 SQLite JSON 模式 (mode: "json"),跟 tasks.tags 保持一致
- *   - 暂时不引入 workspace 概念(单项目),未来要拆多项目时把 id 改成 nanoid + 删 CHECK 即可
+ * 字段:
+ *   - id:nanoid 12 位
+ *   - name:项目名
+ *   - background:项目背景(多步向导第 2 步必填)
+ *   - goals / nonGoals:结构化数组,跟单例表的设计一样
+ *   - techStack:多标签,跟单例表一样
+ *   - createdById:谁建的(展示用,无权限意义)
+ *   - createdAt / updatedAt
+ *
+ * 权限模型(Q1=B, Q6=A):workspaces 表本身不存 owner。
+ *   当前团队 3 人共享所有 workspace,任何人对任何 workspace 有同等权限。
+ *   未来要做多团队/多 owner:加 workspace_members 表(role enum: owner/member)即可。
  */
-export const projectSettings = sqliteTable("project_settings", {
-  id: integer("id").primaryKey(),
-  name: text("name").notNull().default("kanban"),
-  background: text("background"),
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  // background 必填(向导第 2 步)— 不让空项目
+  background: text("background").notNull().default(""),
   // 结构化数组用 SQLite JSON 模式 — 跟 tasks.tags 一样
   goals: text("goals", { mode: "json" }).$type<string[]>().default([]),
   nonGoals: text("non_goals", { mode: "json" }).$type<string[]>().default([]),
   techStack: text("tech_stack", { mode: "json" }).$type<string[]>().default([]),
+  createdById: text("created_by_id").references(() => users.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
-  updatedById: text("updated_by_id").references(() => users.id),
 });
 
 export type DbUser = typeof users.$inferSelect;
@@ -207,4 +224,4 @@ export type DbApiInterface = typeof apiInterfaces.$inferSelect;
 export type DbDocument = typeof documents.$inferSelect;
 export type DbDocumentTask = typeof documentTasks.$inferSelect;
 export type DbSpecInterface = typeof specInterfaces.$inferSelect;
-export type DbProjectSettings = typeof projectSettings.$inferSelect;
+export type DbWorkspace = typeof workspaces.$inferSelect;

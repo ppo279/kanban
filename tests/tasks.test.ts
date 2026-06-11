@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest";
+﻿import { describe, it, expect, beforeEach } from "vitest";
 import { GET as listTasks, POST as createTask } from "@/app/api/tasks/route";
 import { PATCH as updateTask, DELETE as deleteTask } from "@/app/api/tasks/[id]/route";
 import { PATCH as moveTask } from "@/app/api/tasks/[id]/move/route";
 import { GET as listUsers } from "@/app/api/users/route";
-import { makeReq, loginAs, clearAuth } from "./helpers";
+import { makeReq, loginAs, clearAuth, ensureTestWorkspace, TEST_WORKSPACE_ID } from "./helpers";
 
 describe("users", () => {
   beforeEach(async () => {
@@ -26,10 +26,17 @@ describe("tasks", () => {
   beforeEach(async () => {
     clearAuth();
     await loginAs("u_frontend");
+    await ensureTestWorkspace();
   });
 
+  /** 走 /api/tasks?workspaceId= 拿 demo ws 下的任务列表(旧的 listTasks() 不带 query 会 400) */
+  async function listWsTasks() {
+    const { GET } = await import("@/app/api/tasks/route");
+    return GET(makeReq("GET", `http://x/api/tasks?workspaceId=${TEST_WORKSPACE_ID}`));
+  }
+
   it("GET /api/tasks: 返回 seed 后的任务", async () => {
-    const r = await listTasks();
+    const r = await listWsTasks();
     expect(r.status).toBe(200);
     const d = await r.json();
     expect(d.ok).toBe(true);
@@ -56,6 +63,7 @@ describe("tasks", () => {
         description: "由 Vitest 创建",
         priority: "high",
         assigneeId: "u_testing",
+        workspaceId: TEST_WORKSPACE_ID,
       })
     );
     expect(r.status).toBe(200);
@@ -66,6 +74,7 @@ describe("tasks", () => {
     expect(d.task.priority).toBe("high");
     expect(d.task.createdById).toBe("u_frontend");
     expect(d.task.assigneeId).toBe("u_testing");
+    expect(d.task.workspaceId).toBe(TEST_WORKSPACE_ID);
   });
 
   it("POST /api/tasks: 缺 title 400", async () => {
@@ -74,6 +83,7 @@ describe("tasks", () => {
         description: "无标题",
         priority: "low",
         assigneeId: "u_testing",
+        workspaceId: TEST_WORKSPACE_ID,
       })
     );
     expect(r.status).toBe(400);
@@ -85,6 +95,7 @@ describe("tasks", () => {
         title: "x",
         priority: "ULTRA",
         assigneeId: "u_testing",
+        workspaceId: TEST_WORKSPACE_ID,
       })
     );
     expect(r.status).toBe(400);
@@ -96,13 +107,14 @@ describe("tasks", () => {
         title: "x".repeat(201),
         priority: "low",
         assigneeId: "u_testing",
+        workspaceId: TEST_WORKSPACE_ID,
       })
     );
     expect(r.status).toBe(400);
   });
 
   it("PATCH /api/tasks/:id: 改自己创建的任务标题", async () => {
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     const mine = all.find((t) => t.createdById === "u_frontend");
     if (!mine) return;
@@ -116,7 +128,7 @@ describe("tasks", () => {
   });
 
   it("PATCH /api/tasks/:id: 别人任务 403", async () => {
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     const others = all.find((t) => t.createdById !== "u_frontend" && t.assigneeId !== "u_frontend");
     if (!others) return;
@@ -136,7 +148,7 @@ describe("tasks", () => {
   });
 
   it("PATCH /api/tasks/:id/move: 移动到 review 成功", async () => {
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     const target = all.find((t) => t.createdById === "u_frontend" || t.assigneeId === "u_frontend");
     if (!target) return;
@@ -152,7 +164,7 @@ describe("tasks", () => {
   });
 
   it("PATCH /api/tasks/:id/move: 错状态 400", async () => {
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     const target = all.find((t) => t.createdById === "u_frontend" || t.assigneeId === "u_frontend");
     if (!target) return;
@@ -177,6 +189,7 @@ describe("tasks", () => {
         title: "要删的任务",
         priority: "low",
         assigneeId: "u_frontend",
+        workspaceId: TEST_WORKSPACE_ID,
       })
     );
     const created = (await cr.json()).task;
@@ -186,13 +199,13 @@ describe("tasks", () => {
     });
     expect(r.status).toBe(200);
 
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     expect(all.find((t) => t.id === created.id)).toBeUndefined();
   });
 
   it("DELETE /api/tasks/:id: 别人任务 403", async () => {
-    const lr = await listTasks();
+    const lr = await listWsTasks();
     const all = (await lr.json()).tasks as any[];
     const others = all.find((t) => t.createdById !== "u_frontend" && t.assigneeId !== "u_frontend");
     if (!others) return;
@@ -204,7 +217,7 @@ describe("tasks", () => {
 
   it("GET /api/tasks: 未登录 401", async () => {
     clearAuth();
-    const r = await listTasks();
+    const r = await listWsTasks();
     expect(r.status).toBe(401);
   });
 });

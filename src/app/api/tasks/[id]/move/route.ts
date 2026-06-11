@@ -39,6 +39,14 @@ export async function PATCH(
   if (existing.length === 0) {
     return NextResponse.json({ ok: false, error: "任务不存在" }, { status: 404 });
   }
+  // 多项目防御：query 带 ?workspaceId= 必须跟 task.workspaceId 一致
+  const urlWorkspaceId = req.nextUrl.searchParams.get("workspaceId");
+  if (urlWorkspaceId && urlWorkspaceId !== existing[0].workspaceId) {
+    return NextResponse.json(
+      { ok: false, error: "任务不在该工作区" },
+      { status: 403 }
+    );
+  }
   // Any authenticated user on the board can move tasks
 
   await db

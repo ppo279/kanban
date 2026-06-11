@@ -279,20 +279,36 @@ export const MOCK_PLACEHOLDER_PRESETS: Record<string, { value: string; label: st
   object: [],
 };
 
-/* ── ProjectSettings ── */
+/* ── Workspace ── */
 
-/** 单例项目设置(整个平台就一份) */
-export interface ProjectSettings {
+/**
+ * 工作区(项目)— 平台支持多项目并存
+ * 取代之前的单例 ProjectSettings 设计
+ */
+export interface Workspace {
+  id: string;
   name: string;
-  background: string | null;
-  /** 项目目标 — 适合做上下文(给 AI / 团队展示) */
+  /** 项目背景(多步向导第 2 步必填)— 不允许空 */
+  background: string;
+  /** 项目目标 — 结构化数组,适合后续给 AI 当 context */
   goals: string[];
-  /** 明确不做 — 防止 scope creep,也适合做 AI 提示 */
+  /** 明确不做 — 防止 scope creep */
   nonGoals: string[];
-  /** 技术栈标签 — 自由标签,不做后端强校验 */
+  /** 技术栈标签 — 自由标签,后端不强校验 */
   techStack: string[];
+  createdById: string | null;
+  createdAt: number;
   updatedAt: number;
-  updatedById: string | null;
+}
+
+/** 多步向导(4 步)的状态 */
+export interface WorkspaceDraft {
+  step: 1 | 2 | 3 | 4;
+  name: string;
+  background: string;
+  goals: string[];
+  nonGoals: string[];
+  techStack: string[];
 }
 
 /** 预置技术栈建议 — 给标签输入框做 quick add,用户可任意加新标签 */

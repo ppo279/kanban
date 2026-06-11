@@ -32,6 +32,7 @@ export async function runMigrations() {
       created_by_id TEXT NOT NULL REFERENCES users(id),
       parent_id TEXT,
       tags TEXT NOT NULL DEFAULT '[]',
+      workspace_id TEXT NOT NULL DEFAULT '__pending__',
       position REAL NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
@@ -54,6 +55,7 @@ export async function runMigrations() {
 
     CREATE TABLE IF NOT EXISTS api_modules (
       id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT '__pending__',
       name TEXT NOT NULL,
       description TEXT,
       response_wrapper TEXT,
@@ -87,6 +89,7 @@ export async function runMigrations() {
 
     CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL DEFAULT '__pending__',
       title TEXT NOT NULL,
       content TEXT,
       mode TEXT NOT NULL DEFAULT 'free',
@@ -127,19 +130,21 @@ export async function runMigrations() {
 
     CREATE INDEX IF NOT EXISTS spec_interfaces_doc ON spec_interfaces(document_id);
 
-    CREATE TABLE IF NOT EXISTS project_settings (
-      id            INTEGER PRIMARY KEY CHECK (id = 1),
-      name          TEXT NOT NULL DEFAULT 'kanban',
-      background    TEXT,
-      goals         TEXT NOT NULL DEFAULT '[]',
-      non_goals     TEXT NOT NULL DEFAULT '[]',
-      tech_stack    TEXT NOT NULL DEFAULT '[]',
-      updated_at    INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
-      updated_by_id TEXT REFERENCES users(id)
+    -- Workspaces(项目)— 替代旧的 project_settings 单例表
+    -- 不再 seed 默认行:首次进入必须走向导新建项目
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      background TEXT NOT NULL DEFAULT '',
+      goals TEXT NOT NULL DEFAULT '[]',
+      non_goals TEXT NOT NULL DEFAULT '[]',
+      tech_stack TEXT NOT NULL DEFAULT '[]',
+      created_by_id TEXT REFERENCES users(id),
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
 
-    -- 单例默认行:首次启动时插入一条,后续启动看到已存在就跳过
-    INSERT OR IGNORE INTO project_settings (id, name) VALUES (1, 'kanban');
+    CREATE INDEX IF NOT EXISTS workspaces_created_by ON workspaces(created_by_id);
   `);
 
   // 迁移：给 tasks 表添加 type 列（如果不存在）

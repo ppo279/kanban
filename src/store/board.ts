@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { Task, User, Status } from "@/types";
+import type { Task, User, Status, Workspace } from "@/types";
 import { STATUSES } from "@/types";
 
 interface BoardState {
@@ -9,6 +9,12 @@ interface BoardState {
   me: User | null;
   users: User[];
   tasks: Task[];
+  /** 所有 workspace 列表 */
+  workspaces: Workspace[];
+  /** 当前 workspace id(用于 fetch /api/tasks?workspaceId=, 轮 4 会替换为持久化的 store) */
+  currentWorkspaceId: string | null;
+  /** 首次 hydrate 后是否查过 workspaces(决定要不要弹强制向导) */
+  workspacesHydrated: boolean;
 
   // 状态
   hydrated: boolean;
@@ -17,6 +23,9 @@ interface BoardState {
   setMe: (me: User | null) => void;
   setUsers: (users: User[]) => void;
   setTasks: (tasks: Task[]) => void;
+  setWorkspaces: (ws: Workspace[]) => void;
+  setCurrentWorkspaceId: (id: string | null) => void;
+  setWorkspacesHydrated: (b: boolean) => void;
   upsertTask: (t: Task) => void;
   removeTask: (id: string) => void;
   moveTaskLocal: (id: string, status: Status, position: number) => void;
@@ -28,11 +37,23 @@ export const useBoardStore = create<BoardState>((set) => ({
   me: null,
   users: [],
   tasks: [],
+  workspaces: [],
+  currentWorkspaceId: null,
+  workspacesHydrated: false,
   hydrated: false,
 
   setMe: (me) => set({ me }),
   setUsers: (users) => set({ users }),
   setTasks: (tasks) => set({ tasks, hydrated: true }),
+  setWorkspaces: (ws) =>
+    set({
+      workspaces: ws,
+      workspacesHydrated: true,
+      // 第一次 hydrate 时,自动选第一个 ws(老的逻辑里 user 没显式选)
+      currentWorkspaceId: ws.length > 0 ? ws[0].id : null,
+    }),
+  setCurrentWorkspaceId: (id) => set({ currentWorkspaceId: id }),
+  setWorkspacesHydrated: (b) => set({ workspacesHydrated: b }),
   upsertTask: (t) =>
     set((s) => {
       const idx = s.tasks.findIndex((x) => x.id === t.id);
