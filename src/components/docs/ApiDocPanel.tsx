@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/util";
 import { useBoardStore } from "@/store/board";
+import { wsFetch, useCurrentWorkspaceId } from "@/lib/wsFetch";
 import {
   HTTP_METHODS,
   HTTP_METHOD_COLOR,
@@ -58,8 +59,20 @@ interface ModuleWithInterfaces extends ApiModule {
 export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null }) {
   const tasks = useBoardStore((s) => s.tasks);
   const upsertTask = useBoardStore((s) => s.upsertTask);
+  const currentWorkspaceId = useCurrentWorkspaceId();
 
   const [modules, setModules] = useState<ModuleWithInterfaces[]>([]);
+
+  // ── hydrate:切 ws 重新拉 modules(因为 modules 按 ws 隔离) ──
+  useEffect(() => {
+    if (!currentWorkspaceId) {
+      setModules([]);
+      return;
+    }
+    loadModulesAndInterfaces();
+    // 显式依赖 currentWorkspaceId(loadModulesAndInterfaces 是 stable 的)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWorkspaceId]);
   const [expandedModules, setExpandedModules] = useState<Set<string>>(new Set());
   const [selectedIface, setSelectedIface] = useState<ApiInterface | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -108,10 +121,13 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
 
   const loadModulesAndInterfaces = useCallback(async () => {
     try {
+      // 拉 modules 用 wsFetch(自动带 wsId 过滤)
+      // 拉 interfaces 不带 wsId(后端没要求),用 skipWorkspace
+      // 拉 documents 带 wsId(给 spec link 映射用)
       const [modR, ifaceR, docsR] = await Promise.all([
-        fetch("/api/modules", { credentials: "include" }),
-        fetch("/api/interfaces", { credentials: "include" }),
-        fetch("/api/documents", { credentials: "include" }),
+        wsFetch("/api/modules"),
+        wsFetch("/api/interfaces", { skipWorkspace: true }),
+        wsFetch("/api/documents"),
       ]);
       const modData = await modR.json();
       const ifaceData = await ifaceR.json();
@@ -132,10 +148,10 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
         const linkMap: Record<string, SpecInterfaceLink> = {};
         await Promise.all(
           specDocs.map(async (d) => {
-            const r = await fetch(
-              `/api/spec-interfaces?documentId=${d.id}`,
-              { credentials: "include" }
-            );
+            // spec-interfaces:documentId 隐含 wsId(后端从 doc 反查)
+            const r = await wsFetch(`/api/spec-interfaces?documentId=${d.id}`, {
+              skipWorkspace: true,
+            });
             const data = await r.json();
             if (data.ok) {
               for (const si of data.interfaces) {
@@ -236,11 +252,10 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
   async function handleCreateModule() {
     if (!newModuleName.trim()) return;
     try {
-      const r = await fetch("/api/modules", {
+      // module 必须挂到当前 ws,wsFetch 自动 merge
+      const r = await wsFetch("/api/modules", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ name: newModuleName.trim() }),
+        body: { name: newModuleName.trim() },
       });
       const data = await r.json();
       if (data.ok) {
@@ -257,18 +272,18 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
   async function handleCreateInterface(moduleId: string) {
     if (!newIfaceName.trim() || !newIfacePath.trim()) return;
     try {
-      const r = await fetch("/api/interfaces", {
+      // interfaces POST 后端没强制要 wsId(moduleId 隐含 wsId,后端会从 module 反查)
+      const r = await wsFetch("/api/interfaces", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           moduleId,
           name: newIfaceName.trim(),
           method: newIfaceMethod,
           path: newIfacePath.trim(),
           mockResponse: '{"code": 200, "data": {}}',
           status: "active",
-        }),
+        },
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (data.ok) {
@@ -291,23 +306,23 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
     if (!selectedIface) return;
     setSaving(true);
     try {
-      const r = await fetch(`/api/interfaces/${selectedIface.id}`, {
+      // PATCH interface:interfaceId 隐含 wsId,后端会从 module 反查
+      const r = await wsFetch(`/api/interfaces/${selectedIface.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-          body: JSON.stringify({
-            method: editMethod,
-            path: editPath,
-            name: editName,
-            description: editDescription || null,
-            mockResponse: editMockResponse,
-            mockFields: editMockFields.length > 0 ? JSON.stringify(editMockFields) : null,
-            requestFields: editRequestFields.length > 0 ? JSON.stringify(editRequestFields) : null,
-            responseMode: editResponseMode,
+        body: {
+          method: editMethod,
+          path: editPath,
+          name: editName,
+          description: editDescription || null,
+          mockResponse: editMockResponse,
+          mockFields: editMockFields.length > 0 ? JSON.stringify(editMockFields) : null,
+          requestFields: editRequestFields.length > 0 ? JSON.stringify(editRequestFields) : null,
+          responseMode: editResponseMode,
             customWrapper: editCustomWrapper,
             mockStatusCode: editMockStatusCode,
             status: editStatus,
-          }),
+        },
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (data.ok) {
@@ -334,9 +349,10 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
   async function handleDeleteInterface(id: string) {
     if (!confirm("确定删除此接口？")) return;
     try {
-      const r = await fetch(`/api/interfaces/${id}`, {
+      // DELETE interface:id 隐含 wsId(从 module 反查)
+      const r = await wsFetch(`/api/interfaces/${id}`, {
         method: "DELETE",
-        credentials: "include",
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (data.ok) {
@@ -418,11 +434,10 @@ export function ApiDocPanel({ selectedTaskId }: { selectedTaskId?: string | null
         return;
       }
 
-      const r = await fetch("/api/docs/import-swagger", {
+      // import-swagger 后端要 wsId(必传),自动 merge
+      const r = await wsFetch("/api/docs/import-swagger", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ spec: JSON.parse(spec) }),
+        body: { spec: JSON.parse(spec) },
       });
       const data = await r.json();
       if (data.ok) {

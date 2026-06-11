@@ -33,6 +33,7 @@ import {
 import { cn } from "@/lib/util";
 import { useBoardStore } from "@/store/board";
 import { getSocketInstance } from "@/hooks/useSocket";
+import { wsFetch, useCurrentWorkspaceId } from "@/lib/wsFetch";
 import { CollaborativeEditor, type CollaborativeEditorHandle } from "./CollaborativeEditor";
 import { AISettingsDialog } from "./AISettingsDialog";
 import { AIGenerateDialog } from "./AIGenerateDialog";
@@ -214,8 +215,31 @@ export function DocPanel() {
   const me = useBoardStore((s) => s.me);
   const users = useBoardStore((s) => s.users);
   const tasks = useBoardStore((s) => s.tasks);
+  const currentWorkspaceId = useCurrentWorkspaceId();
 
   const [documents, setDocuments] = useState<Document[]>([]);
+
+  // ── hydrate 文档列表(切 ws / 首次进入都触发) ──
+  useEffect(() => {
+    if (!currentWorkspaceId) {
+      setDocuments([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await wsFetch("/api/documents");
+        if (cancelled) return;
+        const data = await r.json();
+        if (data.ok) setDocuments(data.documents);
+      } catch {
+        // 静默 — 让用户手动创建
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentWorkspaceId]);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
@@ -276,9 +300,8 @@ export function DocPanel() {
       if (selectedDoc?.id === docId) return;
       (async () => {
         try {
-          const r = await fetch(`/api/documents/${docId}`, {
-            credentials: "include",
-          });
+          // doc 详情 GET 不需要 ?workspaceId(后端没要求),但跳 ws 校验走 query 路径
+          const r = await wsFetch(`/api/documents/${docId}`, { skipWorkspace: true });
           const data = await r.json();
           if (!data.ok || !data.document) return;
           // 复用 handleSelectDoc 的初始化逻辑
@@ -373,6 +396,8 @@ export function DocPanel() {
       setLiveDocJson(null);
     }
     setInitialContent(content);
+    // 关键:点文档列表必须开 dialog(之前漏了,导致点了没反应)
+    setDialogOpen(true);
   }
 
   // 把 editor 的 Tiptap JSON 字符串保存回文档
@@ -380,11 +405,9 @@ export function DocPanel() {
     if (!selectedDoc) return;
     setSaving(true);
     try {
-      const r = await fetch(`/api/documents/${selectedDoc.id}`, {
+      const r = await wsFetch(`/api/documents/${selectedDoc.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ title: editingTitle, content }),
+        body: { title: editingTitle, content },
       });
       const data = await r.json();
       if (data.ok) {
@@ -446,15 +469,13 @@ export function DocPanel() {
         newDocMode === "free"
           ? ""
           : buildTemplateContent(newDocMode);
-      const r = await fetch("/api/documents", {
+      const r = await wsFetch("/api/documents", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           title: newDocTitle.trim(),
           mode: newDocMode,
           content,
-        }),
+        },
       });
       const data = await r.json();
       if (data.ok) {
@@ -570,10 +591,7 @@ export function DocPanel() {
   }
 
   async function performDeleteDoc(id: string) {
-    const r = await fetch(`/api/documents/${id}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
+    const r = await wsFetch(`/api/documents/${id}`, { method: "DELETE" });
     const data = await r.json();
     if (!data.ok) {
       throw new Error(data.error ?? "删除失败");
@@ -595,11 +613,9 @@ export function DocPanel() {
     if (!selectedDoc || selectedDoc.mode === targetMode) return;
     setModeChanging(true);
     try {
-      const r = await fetch(`/api/documents/${selectedDoc.id}`, {
+      const r = await wsFetch(`/api/documents/${selectedDoc.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ mode: targetMode }),
+        body: { mode: targetMode },
       });
       const data = await r.json();
       if (data.ok) {
@@ -648,18 +664,16 @@ export function DocPanel() {
     if (!selectedDoc) return;
 
     try {
-      // 1) 创建 task
-      const cr = await fetch("/api/tasks", {
+      // 1) 创建 task — workspaceId 由 wsFetch 自动 merge
+      const cr = await wsFetch("/api/tasks", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           title,
           priority: createForm.priority,
           status: createForm.status,
           type: "doc",
           assigneeId: createForm.assigneeId || me?.id || "",
-        }),
+        },
       });
       const cdata = await cr.json();
       if (!cdata.ok) {
@@ -668,16 +682,15 @@ export function DocPanel() {
       }
       const newTask: Task = cdata.task;
 
-      // 2) 关联
-      const lr = await fetch("/api/document-tasks", {
+      // 2) 关联(document-tasks 关联:id 隐含 wsId,后端从 doc 反查)
+      const lr = await wsFetch("/api/document-tasks", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           documentId: selectedDoc.id,
           taskId: newTask.id,
           sectionKey: null,
-        }),
+        },
+        skipWorkspace: true,
       });
       const ldata = await lr.json();
       if (!ldata.ok) {

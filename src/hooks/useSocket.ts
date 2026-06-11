@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { io, type Socket } from "socket.io-client";
 import { useBoardStore } from "@/store/board";
+import { wsFetch } from "@/lib/wsFetch";
 import type { Task } from "@/types";
 
 /**
@@ -29,8 +30,12 @@ function getSocket(): Socket {
 }
 
 async function resync(setTasks: (t: Task[]) => void) {
+  // 没切 ws → 不拉(让 wsFetch 抛错,我们吞掉)
+  const wsId = useBoardStore.getState().currentWorkspaceId;
+  if (!wsId) return;
   try {
-    const r = await fetch("/api/tasks", { credentials: "include" });
+    // wsFetch 会自动拼 ?workspaceId=wsId(GET 走 URL)
+    const r = await wsFetch("/api/tasks");
     if (r.ok) {
       const data = await r.json();
       setTasks(data.tasks);
@@ -45,6 +50,7 @@ export function useSocket() {
   const upsertTask = useBoardStore((s) => s.upsertTask);
   const removeTask = useBoardStore((s) => s.removeTask);
   const moveTaskLocal = useBoardStore((s) => s.moveTaskLocal);
+  const currentWorkspaceId = useBoardStore((s) => s.currentWorkspaceId);
 
   useEffect(() => {
     const s = getSocket();
@@ -76,6 +82,12 @@ export function useSocket() {
       s.off("task:deleted", onTaskDeleted);
     };
   }, [setTasks, upsertTask, removeTask, moveTaskLocal]);
+
+  // 切 ws 后,立刻 resync(避免等 socket 重连)
+  useEffect(() => {
+    if (!currentWorkspaceId) return;
+    resync(setTasks);
+  }, [currentWorkspaceId, setTasks]);
 }
 
 export function getSocketInstance() {

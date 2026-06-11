@@ -28,6 +28,7 @@ import {
 import type { Task, User } from "@/types";
 import { cn } from "@/lib/util";
 import { useBoardStore, selectChildrenOf, computeSubtaskProgress } from "@/store/board";
+import { wsFetch } from "@/lib/wsFetch";
 
 const STATUS_BADGE: Record<Status, string> = {
   todo: "bg-slate-100 text-slate-700 border-slate-300",
@@ -44,11 +45,16 @@ interface Props {
   onEdit?: (t: Task) => void;
   /** 是否正在被"跳转"高亮(从协作文档点徽章跳过来) */
   flash?: boolean;
+  /** 聚合视图模式:禁用 drag + 隐藏编辑/删除按钮 + 显示 ws 来源 */
+  isAggregate?: boolean;
+  /** 聚合视图下显示的 ws 名称(列头传入) */
+  workspaceName?: string;
 }
 
-export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = false }: Props) {
+export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = false, isAggregate = false, workspaceName }: Props) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: task.id,
+    disabled: isAggregate, // 聚合模式不能拖
   });
 
   const me = useBoardStore((s) => s.me);
@@ -60,9 +66,9 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
     e.stopPropagation();
 
     try {
-      const r = await fetch(`/api/tasks/${task.id}`, {
+      // DELETE /api/tasks/:id:后端必传 wsId
+      const r = await wsFetch(`/api/tasks/${task.id}`, {
         method: "DELETE",
-        credentials: "include",
       });
       const data = await r.json();
 
@@ -101,7 +107,8 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/tasks/${task.id}/documents`, { credentials: "include" })
+    // /api/tasks/:id/documents:taskId 隐含 wsId,skipWorkspace 避免污染 query
+    wsFetch(`/api/tasks/${task.id}/documents`, { skipWorkspace: true })
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled && d.ok) {
@@ -181,12 +188,14 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
             {...attributes}
             onClick={() => !isDragging && onClick?.(task)}
             className={cn(
-              "flex items-start gap-2 p-3 cursor-grab active:cursor-grabbing select-none",
+              "flex items-start gap-2 p-3 select-none",
+              // 聚合模式不能拖,普通模式可拖
+              isAggregate ? "cursor-pointer" : "cursor-grab active:cursor-grabbing",
               hasChildren && "pb-2"
             )}
           >
             <div className="flex-1 min-w-0 pl-2">
-              {/* 类型徽章 + 父子标识 */}
+              {/* 类型徽章 + 父子标识 + 聚合模式下的 ws 来源标签 */}
               <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                 <span
                   className={cn(
@@ -196,6 +205,14 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
                 >
                   {TASK_TYPE_LABEL[task.type ?? "feature"]}
                 </span>
+                {isAggregate && workspaceName && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200 px-1.5 py-0.5 text-[9px] font-medium"
+                    title="所属项目"
+                  >
+                    📁 {workspaceName}
+                  </span>
+                )}
                 {hasParent && (
                   <span
                     className="inline-flex items-center gap-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 text-[9px] font-medium"
@@ -345,7 +362,7 @@ export function TaskCard({ task, assignee, onClick, onView, onEdit, flash = fals
           <Eye className="mr-2 h-4 w-4" />
           查看详情
         </ContextMenuItem>
-        {canEdit && (
+        {canEdit && !isAggregate && (
           <>
             <ContextMenuItem onClick={() => onEdit?.(task)}>
               <Pencil className="mr-2 h-4 w-4" />

@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/util";
 import { detectSpecCandidates, type Candidate, type InterfaceCandidate, type ChecklistCandidate } from "@/lib/specDetector";
 import { useBoardStore } from "@/store/board";
+import { wsFetch } from "@/lib/wsFetch";
 import type { TiptapNode } from "@/lib/specDetector";
 import type { HttpMethod } from "@/types";
 
@@ -185,11 +186,10 @@ export function PendingReviewPanel({
           const proposed = liveEdit
             ? { ...c.proposed, ...liveEdit }
             : c.proposed;
-          const r = await fetch("/api/spec-interfaces", {
+          // spec-interfaces POST:documentId 隐含 wsId(后端从 doc 反查)
+          const r = await wsFetch("/api/spec-interfaces", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
+            body: {
               documentId,
               method: proposed.method,
               path: proposed.path,
@@ -197,7 +197,8 @@ export function PendingReviewPanel({
               description: proposed.description,
               mockResponse: proposed.mockResponse,
               mockStatusCode: proposed.mockStatusCode,
-            }),
+            },
+            skipWorkspace: true,
           });
           const data = await r.json();
           if (!r.ok || !data.ok) {

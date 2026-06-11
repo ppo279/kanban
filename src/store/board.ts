@@ -15,6 +15,11 @@ interface BoardState {
   currentWorkspaceId: string | null;
   /** 首次 hydrate 后是否查过 workspaces(决定要不要弹强制向导) */
   workspacesHydrated: boolean;
+  /**
+   * 聚合视图模式 — true 时 currentWorkspaceId 实际是 "__all__" 哨兵值,
+   * Board 渲染所有 ws 的任务,但禁用 drag/click-to-edit(只读)
+   */
+  isAggregate: boolean;
 
   // 状态
   hydrated: boolean;
@@ -26,6 +31,8 @@ interface BoardState {
   setWorkspaces: (ws: Workspace[]) => void;
   setCurrentWorkspaceId: (id: string | null) => void;
   setWorkspacesHydrated: (b: boolean) => void;
+  /** 切到/退出聚合视图 */
+  setIsAggregate: (b: boolean) => void;
   upsertTask: (t: Task) => void;
   removeTask: (id: string) => void;
   moveTaskLocal: (id: string, status: Status, position: number) => void;
@@ -40,6 +47,7 @@ export const useBoardStore = create<BoardState>((set) => ({
   workspaces: [],
   currentWorkspaceId: null,
   workspacesHydrated: false,
+  isAggregate: false,
   hydrated: false,
 
   setMe: (me) => set({ me }),
@@ -50,10 +58,18 @@ export const useBoardStore = create<BoardState>((set) => ({
       workspaces: ws,
       workspacesHydrated: true,
       // 第一次 hydrate 时,自动选第一个 ws(老的逻辑里 user 没显式选)
+      // 但不强制设聚合视图
       currentWorkspaceId: ws.length > 0 ? ws[0].id : null,
     }),
   setCurrentWorkspaceId: (id) => set({ currentWorkspaceId: id }),
   setWorkspacesHydrated: (b) => set({ workspacesHydrated: b }),
+  setIsAggregate: (b) =>
+    set((s) => ({
+      isAggregate: b,
+      // 进聚合时 currentWorkspaceId 变成哨兵 "__all__" 让 wsFetch 拼出正确 url
+      // 出聚合时恢复成第一个 ws
+      currentWorkspaceId: b ? "__all__" : s.workspaces[0]?.id ?? null,
+    })),
   upsertTask: (t) =>
     set((s) => {
       const idx = s.tasks.findIndex((x) => x.id === t.id);

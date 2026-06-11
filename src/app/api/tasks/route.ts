@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ ok: false, error: "未登录" }, { status: 401 });
 
   // 必传 ?workspaceId= —— 平台支持多项目,列表必须按当前 ws 过滤
+  // 特殊值 "__all__" 表示聚合视图(只读),返回所有 ws 的任务
   const workspaceId = req.nextUrl.searchParams.get("workspaceId");
   if (!workspaceId) {
     return NextResponse.json(
@@ -20,25 +21,40 @@ export async function GET(req: NextRequest) {
       { status: 400 }
     );
   }
-  // 校验 ws 存在(防止 404/越权之间模糊)
-  const [ws] = await db
-    .select({ id: schema.workspaces.id })
-    .from(schema.workspaces)
-    .where(eq(schema.workspaces.id, workspaceId))
-    .limit(1);
-  if (!ws) {
-    return NextResponse.json(
-      { ok: false, error: "工作区不存在" },
-      { status: 404 }
-    );
+
+  const isAggregate = workspaceId === "__all__";
+
+  if (!isAggregate) {
+    // 校验 ws 存在(防止 404/越权之间模糊)
+    const [ws] = await db
+      .select({ id: schema.workspaces.id })
+      .from(schema.workspaces)
+      .where(eq(schema.workspaces.id, workspaceId))
+      .limit(1);
+    if (!ws) {
+      return NextResponse.json(
+        { ok: false, error: "工作区不存在" },
+        { status: 404 }
+      );
+    }
   }
 
-  const rows = await db
-    .select()
-    .from(schema.tasks)
-    .where(eq(schema.tasks.workspaceId, workspaceId))
-    .orderBy(schema.tasks.status, schema.tasks.position);
-  return NextResponse.json({ ok: true, tasks: rows.map(toApiTask) });
+  const rows = isAggregate
+    ? await db
+        .select()
+        .from(schema.tasks)
+        .orderBy(schema.tasks.workspaceId, schema.tasks.status, schema.tasks.position)
+    : await db
+        .select()
+        .from(schema.tasks)
+        .where(eq(schema.tasks.workspaceId, workspaceId))
+        .orderBy(schema.tasks.status, schema.tasks.position);
+
+  return NextResponse.json({
+    ok: true,
+    tasks: rows.map(toApiTask),
+    isAggregate, // 告诉前端当前是聚合模式(只读)
+  });
 }
 
 const CreateBody = z.object({

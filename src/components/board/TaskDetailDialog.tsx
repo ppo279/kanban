@@ -65,6 +65,7 @@ import {
   type ApiInterface,
 } from "@/types";
 import { cn } from "@/lib/util";
+import { wsFetch } from "@/lib/wsFetch";
 
 const SUBTASK_STATUS_BADGE: Record<Status, string> = {
   todo: "bg-slate-100 text-slate-700 border-slate-300",
@@ -92,11 +93,13 @@ interface Props {
   task: Task | null;
   open: boolean;
   onOpenChange: (b: boolean) => void;
+  /** 聚合视图模式:所有编辑/创建/删除按钮禁用,只展示只读视图 */
+  isAggregate?: boolean;
 }
 
 type TabId = "detail" | "relations" | "history";
 
-export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
+export function TaskDetailDialog({ task, open, onOpenChange, isAggregate = false }: Props) {
   const me = useBoardStore((s) => s.me);
   const users = useBoardStore((s) => s.users);
   const upsertTask = useBoardStore((s) => s.upsertTask);
@@ -180,7 +183,8 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   // ── 网络操作 ──
   async function loadLinkedDocs(taskId: string) {
     try {
-      const r = await fetch(`/api/tasks/${taskId}/documents`, { credentials: "include" });
+      // taskId 隐含 wsId(后端没强制要,改用 skipWorkspace 避免污染 query string)
+      const r = await wsFetch(`/api/tasks/${taskId}/documents`, { skipWorkspace: true });
       const data = await r.json();
       if (data.ok) setLinkedDocs(data.links);
     } catch {/* ignore */}
@@ -195,7 +199,8 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     }
     const handle = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/documents?q=${encodeURIComponent(q)}`, { credentials: "include" });
+        // /api/documents 后端要 wsId,wsFetch 自动拼 query
+        const r = await wsFetch(`/api/documents?q=${encodeURIComponent(q)}`);
         const data = await r.json();
         if (data.ok) {
           const linkedIds = new Set(linkedDocs.map((l) => l.documentId));
@@ -210,11 +215,11 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     if (!task) return;
     setLinkingDoc(true);
     try {
-      const r = await fetch("/api/document-tasks", {
+      // document-tasks POST:id 隐含 wsId(从 doc 反查)
+      const r = await wsFetch("/api/document-tasks", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ documentId: docId, taskId: task.id }),
+        body: { documentId: docId, taskId: task.id },
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -235,9 +240,10 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   async function handleUnlinkDoc(docId: string) {
     if (!task) return;
     try {
-      const r = await fetch(
+      // document-tasks DELETE:id 隐含 wsId
+      const r = await wsFetch(
         `/api/document-tasks?docId=${encodeURIComponent(docId)}&taskId=${encodeURIComponent(task.id)}`,
-        { method: "DELETE", credentials: "include" }
+        { method: "DELETE", skipWorkspace: true }
       );
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -257,7 +263,8 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
 
   async function loadLinkedInterfaces(taskId: string) {
     try {
-      const r = await fetch(`/api/interfaces?taskId=${taskId}`, { credentials: "include" });
+      // /api/interfaces?taskId=:taskId 隐含 wsId(后端从 task 反查)
+      const r = await wsFetch(`/api/interfaces?taskId=${taskId}`, { skipWorkspace: true });
       const data = await r.json();
       if (data.ok && data.interfaces.length > 0) {
         setLinkedInterfaces(data.interfaces);
@@ -297,17 +304,16 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     }
     setSaving(true);
     try {
-      const r = await fetch(`/api/tasks/${task.id}`, {
+      // PATCH /api/tasks/:id 后端必传 wsId(越权校验)
+      const r = await wsFetch(`/api/tasks/${task.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           title: title.trim(),
           description: description.trim() || null,
           priority,
           type,
           assigneeId,
-        }),
+        },
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -344,28 +350,27 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
       };
 
       if (linkedInterfaces.length > 0) {
-        await fetch(`/api/interfaces/${linkedInterfaces[0].id}`, {
+        // PATCH interface:interfaceId 隐含 wsId
+        await wsFetch(`/api/interfaces/${linkedInterfaces[0].id}`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(ifaceData),
+          body: ifaceData,
+          skipWorkspace: true,
         });
       } else {
         let moduleId = "";
-        const modR = await fetch("/api/modules", {
+        // POST /api/modules:后端要 wsId,自动 merge
+        const modR = await wsFetch("/api/modules", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ name: "自动创建模块" }),
+          body: { name: "自动创建模块" },
         });
         const modData = await modR.json();
         if (modData.ok) moduleId = modData.module.id;
         if (moduleId) {
-          await fetch("/api/interfaces", {
+          // POST /api/interfaces:moduleId 隐含 wsId
+          await wsFetch("/api/interfaces", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ ...ifaceData, moduleId }),
+            body: { ...ifaceData, moduleId },
+            skipWorkspace: true,
           });
         }
       }
@@ -377,9 +382,9 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     if (!confirm("确定删除这个任务?")) return;
     setDeleting(true);
     try {
-      const r = await fetch(`/api/tasks/${task.id}`, {
+      // DELETE /api/tasks/:id:后端必传 wsId 越权校验
+      const r = await wsFetch(`/api/tasks/${task.id}`, {
         method: "DELETE",
-        credentials: "include",
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -400,16 +405,15 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
     if (!task || !newSubtaskTitle.trim()) return;
     setCreatingSubtask(true);
     try {
-      const r = await fetch("/api/tasks", {
+      // POST /api/tasks:后端必传 wsId,自动 merge
+      const r = await wsFetch("/api/tasks", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           title: newSubtaskTitle.trim(),
           parentId: task.id,
           assigneeId: me?.id ?? task.assigneeId,
           priority: "med",
-        }),
+        },
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -435,6 +439,12 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl p-0 gap-0 overflow-hidden">
+        {/* 聚合模式横幅 */}
+        {isAggregate && (
+          <div className="border-b border-amber-300 bg-amber-50 px-6 py-2 text-xs text-amber-900">
+            聚合视图(只读):此任务来自其它项目,不可编辑/移动/删除。
+          </div>
+        )}
         {/* ── Header ── */}
         <DialogHeader className="border-b px-6 py-4">
           <div className="flex items-start gap-3">
@@ -490,7 +500,7 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
                   className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-md border bg-popover text-popover-foreground shadow-md p-1"
                   onMouseLeave={() => setMenuOpen(false)}
                 >
-                  {canEdit && (
+                  {canEdit && !isAggregate && (
                     <button
                       type="button"
                       onClick={() => {
@@ -578,6 +588,7 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
               setNewSubtaskTitle={setNewSubtaskTitle}
               creatingSubtask={creatingSubtask}
               handleAddSubtask={handleAddSubtask}
+              isAggregate={isAggregate}
               showMockSection={showMockTab}
               mockMethod={mockMethod}
               setMockMethod={setMockMethod}
@@ -604,7 +615,7 @@ export function TaskDetailDialog({ task, open, onOpenChange }: Props) {
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button onClick={handleSave} disabled={!canEdit || saving}>
+          <Button onClick={handleSave} disabled={!canEdit || saving || isAggregate}>
             {saving ? "保存中…" : "保存"}
           </Button>
         </div>
@@ -771,6 +782,8 @@ function RelationsTab(props: {
   setNewSubtaskTitle: (v: string) => void;
   creatingSubtask: boolean;
   handleAddSubtask: () => void;
+  /** 聚合模式:禁用"添加子任务"按钮 */
+  isAggregate?: boolean;
   showMockSection: boolean;
   mockMethod: string;
   setMockMethod: (v: string) => void;
@@ -942,7 +955,7 @@ function RelationsTab(props: {
                 type="button"
                 size="sm"
                 onClick={p.handleAddSubtask}
-                disabled={p.creatingSubtask || !p.newSubtaskTitle.trim()}
+                disabled={p.creatingSubtask || !p.newSubtaskTitle.trim() || p.isAggregate}
                 className="h-8"
               >
                 <Plus className="h-3 w-3 mr-1" />

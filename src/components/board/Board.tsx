@@ -11,7 +11,7 @@ import {
   DragOverlay,
   closestCenter,
 } from "@dnd-kit/core";
-import { Plus, LogOut, PanelRightOpen } from "lucide-react";
+import { Plus, LogOut, PanelRightOpen, Layers } from "lucide-react";
 import { toast } from "sonner";
 import { Column } from "./Column";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -28,6 +28,7 @@ import { useRouter } from "next/navigation";
 import { DocSidebar } from "@/components/docs/DocSidebar";
 import { CreateWorkspaceWizard } from "@/components/workspace/CreateWorkspaceWizard";
 import { WorkspaceSwitcher } from "@/components/workspace/WorkspaceSwitcher";
+import { wsFetch } from "@/lib/wsFetch";
 
 export function Board() {
   const router = useRouter();
@@ -41,10 +42,19 @@ export function Board() {
   const workspaces = useBoardStore((s) => s.workspaces);
   const currentWorkspaceId = useBoardStore((s) => s.currentWorkspaceId);
   const workspacesHydrated = useBoardStore((s) => s.workspacesHydrated);
+  const isAggregate = useBoardStore((s) => s.isAggregate);
   const setWorkspaces = useBoardStore((s) => s.setWorkspaces);
   const setCurrentWorkspaceId = useBoardStore((s) => s.setCurrentWorkspaceId);
+  const setIsAggregate = useBoardStore((s) => s.setIsAggregate);
+  // 切 ws 立即清空 store.tasks,避免旧 ws 任务闪一下(useSocket 异步 resync 会很快填充)
+  const setTasks = useBoardStore((s) => s.setTasks);
 
   useSocket();
+
+  // ── 切 ws 立刻清空任务列表(useSocket resync 异步补新数据) ──
+  useEffect(() => {
+    setTasks([]);
+  }, [currentWorkspaceId, setTasks]);
 
   // ── 拉 workspace 列表(只拉一次) ──
   useEffect(() => {
@@ -167,7 +177,7 @@ export function Board() {
     moveTaskLocal(id, newStatus, newPos);
 
     try {
-      const r = await fetch(`/api/tasks/${id}/move`, {
+      const r = await fetch(`/api/tasks/${id}/move?workspaceId=${currentWorkspaceId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -176,9 +186,11 @@ export function Board() {
       const data = await r.json();
       if (!r.ok || !data.ok) {
         toast.error(data.error ?? "移动失败");
-        // 回滚：刷新全量
-        const all = await fetch("/api/tasks", { credentials: "include" }).then((r) => r.json());
-        if (all.ok) useBoardStore.getState().setTasks(all.tasks);
+        // 回滚：刷新全量(用 wsFetch 自动拼 wsId)
+        if (currentWorkspaceId) {
+          const all = await wsFetch(`/api/tasks?workspaceId=${currentWorkspaceId}`).then((r) => r.json());
+          if (all.ok) useBoardStore.getState().setTasks(all.tasks);
+        }
         return;
       }
       upsertTask(data.task);
@@ -278,13 +290,26 @@ export function Board() {
             onDelete={handleDeleteWs}
           />
           <Button
+            variant={isAggregate ? "default" : "outline"}
+            size="sm"
+            onClick={() => setIsAggregate(!isAggregate)}
+            title="聚合视图(只读):看所有项目的任务"
+          >
+            <Layers className="mr-1 h-4 w-4" /> {isAggregate ? "退出聚合" : "聚合视图"}
+          </Button>
+          <Button
             variant={sidebarOpen ? "default" : "outline"}
             size="sm"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             <PanelRightOpen className="mr-1 h-4 w-4" /> 文档
           </Button>
-          <Button onClick={() => setNewOpen(true)} size="sm">
+          <Button
+            onClick={() => setNewOpen(true)}
+            size="sm"
+            disabled={isAggregate}
+            title={isAggregate ? "聚合视图只读,不能新建任务" : "新建任务"}
+          >
             <Plus className="mr-1 h-4 w-4" /> 新建任务
           </Button>
           {me && (
@@ -309,10 +334,21 @@ export function Board() {
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
-            onDragStart={(e: DragStartEvent) => setActiveId(String(e.active.id))}
+            onDragStart={(e: DragStartEvent) => {
+              if (isAggregate) return; // 聚合只读
+              setActiveId(String(e.active.id));
+            }}
             onDragEnd={onDragEnd}
             onDragCancel={() => setActiveId(null)}
           >
+            {/* 聚合模式横幅 */}
+            {isAggregate && (
+              <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+                聚合视图(只读):展示所有项目的任务,不可编辑/移动/新建。
+                任务卡左侧带 <span className="font-mono text-xs">📁</span> 标签标识所属项目。
+              </div>
+            )}
+
             <div className="flex gap-3">
               {STATUSES.map((s) => (
                 <Column
@@ -320,6 +356,8 @@ export function Board() {
                   status={s}
                   tasks={byStatus[s]}
                   users={users}
+                  isAggregate={isAggregate}
+                  workspaceNameById={Object.fromEntries(workspaces.map((w) => [w.id, w.name]))}
                   onCardClick={(t) => {
                     setDetailTask(t);
                     setDetailOpen(true);
@@ -354,7 +392,12 @@ export function Board() {
       </div>
 
 <NewTaskDialog open={newOpen} onOpenChange={setNewOpen} />
-      <TaskDetailDialog task={detailTask} open={detailOpen} onOpenChange={setDetailOpen} />
+      <TaskDetailDialog
+        task={detailTask}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        isAggregate={isAggregate}
+      />
       <DocDetailDialog />
       <CreateWorkspaceWizard
         open={wizardOpen}

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { FileText, Plus } from "lucide-react";
 import { useBoardStore } from "@/store/board";
+import { wsFetch } from "@/lib/wsFetch";
 import {
   PRIORITIES,
   PRIORITY_LABEL,
@@ -71,7 +72,7 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
   // Load modules when dialog opens
   useEffect(() => {
     if (open) {
-      fetch("/api/modules", { credentials: "include" })
+      wsFetch("/api/modules")
         .then((r) => r.json())
         .then((data) => {
           if (data.ok) setModules(data.modules);
@@ -108,7 +109,7 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
   useEffect(() => {
     if (open) {
       // 拉可关联的文档列表(让用户选已有)
-      fetch("/api/documents", { credentials: "include" })
+      wsFetch("/api/documents")
         .then((r) => r.json())
         .then((d) => {
           if (d.ok) setExistingDocs(d.documents);
@@ -142,17 +143,16 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
 
     setLoading(true);
     try {
-      const r = await fetch("/api/tasks", {
+      // workspaceId 由 wsFetch 自动 merge(取自 store)
+      const r = await wsFetch("/api/tasks", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+        body: {
           title: title.trim(),
           description: description.trim() || null,
           priority,
           type,
           assigneeId,
-        }),
+        },
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -187,21 +187,19 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       let docId = linkExistingDocId;
       if (!docId && newDocTitle.trim()) {
         // 新建一个 free 文档
-        const r = await fetch("/api/documents", {
+        const r = await wsFetch("/api/documents", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ title: newDocTitle.trim(), mode: docMode }),
+          body: { title: newDocTitle.trim(), mode: docMode },
         });
         const data = await r.json();
         if (data.ok) docId = data.document.id;
       }
       if (docId) {
-        await fetch("/api/document-tasks", {
+        // 关联 task-document:document-tasks 后端没要 wsId(因为它从两个 id 反查),用 skipWorkspace
+        await wsFetch("/api/document-tasks", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ documentId: docId, taskId }),
+          body: { documentId: docId, taskId },
+          skipWorkspace: true,
         });
       }
     } catch {
@@ -215,12 +213,10 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       let finalModuleId = moduleId;
 
       if (!finalModuleId && newModuleName.trim()) {
-        // Create new module
-        const modR = await fetch("/api/modules", {
+        // Create new module — wsFetch 自动 merge workspaceId
+        const modR = await wsFetch("/api/modules", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ name: newModuleName.trim() }),
+          body: { name: newModuleName.trim() },
         });
         const modData = await modR.json();
         if (modData.ok) finalModuleId = modData.module.id;
@@ -232,11 +228,9 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
         if (existing) {
           finalModuleId = existing.id;
         } else {
-          const modR = await fetch("/api/modules", {
+          const modR = await wsFetch("/api/modules", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ name: "Mock API" }),
+            body: { name: "Mock API" },
           });
           const modData = await modR.json();
           if (modData.ok) finalModuleId = modData.module.id;
@@ -244,11 +238,10 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
       }
 
       if (finalModuleId) {
-        await fetch("/api/interfaces", {
+        // POST /api/interfaces:moduleId 隐含 wsId
+        await wsFetch("/api/interfaces", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
+          body: {
             moduleId: finalModuleId,
             taskId,
             name: title.trim(),
@@ -258,7 +251,8 @@ export function NewTaskDialog({ open, onOpenChange }: Props) {
             mockResponse,
             mockStatusCode,
             status: "active",
-          }),
+          },
+          skipWorkspace: true,
         });
       }
     } catch {

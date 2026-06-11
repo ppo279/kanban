@@ -35,6 +35,11 @@ export interface Task {
   position: number;
   createdAt: number;
   updatedAt: number;
+  /**
+   * 任务归属的 workspace id。
+   * 后端 toApiTask 始终返回;前端聚合视图用它识别任务来自哪个项目。
+   */
+  workspaceId: string;
 }
 
 export interface ApiModule {

@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/util";
+import { wsFetch } from "@/lib/wsFetch";
 import type { DocMode } from "@/types";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
@@ -105,11 +106,11 @@ export function SpecInterfaceEditor({ documentId, docMode }: Props) {
       return;
     }
     try {
-      const r = await fetch("/api/spec-interfaces", {
+      // spec-interfaces POST:documentId 隐含 wsId
+      const r = await wsFetch("/api/spec-interfaces", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ ...draft, documentId }),
+        body: { ...draft, documentId },
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (!r.ok || !data.ok) {
