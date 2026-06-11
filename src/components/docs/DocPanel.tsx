@@ -36,20 +36,13 @@ import { getSocketInstance } from "@/hooks/useSocket";
 import { wsFetch, useCurrentWorkspaceId } from "@/lib/wsFetch";
 import { CollaborativeEditor, type CollaborativeEditorHandle } from "./CollaborativeEditor";
 import { AISettingsDialog } from "./AISettingsDialog";
-import { AIGenerateDialog } from "./AIGenerateDialog";
+import { AIDrawer } from "./AIDrawer";
 import { DeleteDocDialog } from "./DeleteDocDialog";
 import { ImportToKanbanDialog, parseChecklistFromDocJson } from "./ImportToKanbanDialog";
 import { SpecInterfaceEditor } from "./SpecInterfaceEditor";
 import { PendingReviewPanel } from "./PendingReviewPanel";
 import type { TiptapNode } from "@/lib/specDetector";
-import {
-  hasAPIKey,
-  getAPIKey,
-  wrapApiKeyWithRetry,
-  resetAIPubkeyCache,
-  type AIProvider,
-} from "@/lib/ai-keys";
-import { resolveModel, AI_PROVIDER_CONFIG } from "@/lib/aiProviders";
+import { hasAPIKey } from "@/lib/ai-keys";
 import {
   DOC_MODES,
   DOC_MODE_LABEL,
@@ -260,11 +253,10 @@ export function DocPanel() {
     editor: null,
   });
 
-  // ── AI 生成(本次 scope 仅补 stub 让 tsc 通过,真实流程后续接) ──
-  const [aiGenerateOpen, setAiGenerateOpen] = useState(false);
+  // ── AI 抽屉(常驻右侧,可折叠) — 替代老的 AIGenerateDialog ──
+  const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiGeneratedContent, setAiGeneratedContent] = useState<string>("");
   // AI 状态轮询 tick(显示在线/锁状态用)— 用数字递增触发 useEffect 重读
   const [aiKeysTick, setAiKeysTick] = useState(0);
 
@@ -499,120 +491,27 @@ export function DocPanel() {
     if (!ok) toast.error("插入失败(文档可能没打开)");
   }
 
-  // ── 标题驱动的快速生成(没选中 doc 时也会自动创建) ──
-  async function handleQuickGenerate(prompt: string) {
-    // 1) 解析 provider/model —— 本地存了多个 provider 的话,选第一个配了 key 的
-    const providers: AIProvider[] = ["deepseek", "minimax"];
-    const provider = (providers.find((p) => hasAPIKey(p)) ?? providers[0]) as AIProvider;
-    const model = AI_PROVIDER_CONFIG[provider].defaultModel;
+  // ── AI 生成入口:由 AIDrawer 自己发请求,DocPanel 不再持有 AI state。
+  // 老 handleAdvancedGenerate / handleQuickGenerate / aiGeneratedContent 已删 —
+  // 它们走 dialog 模式,生成完就关,内容到不了 doc,等于纯摆设。
+  // 现在 AIDrawer 常驻,内容直接 setContent 到编辑器,所见即所得。
 
-    // 2) 复用 advanced 流程(它会处理"没 doc 自动建" + 信封加密 + mode 校验)
-    await handleAdvancedGenerate(provider, model, prompt);
-  }
-
-  async function handleAdvancedGenerate(
-    provider: string,
-    model: string,
-    prompt: string
-  ) {
-    setAiGenerating(true);
-    try {
-      // ── 流程:不管有没有 selectedDoc,都先确保有一个 doc ──
-      // 没选中 → 用父表单的 newDocTitle + newDocMode 先建一个
-      // 选中了 → 直接复用
-      let targetDoc = selectedDoc;
-      if (!targetDoc) {
-        if (!newDocTitle.trim()) {
-          toast.error("请先在上面填一个文档标题");
-          setAiGenerating(false);
-          return;
-        }
-        const cr = await wsFetch("/api/documents", {
-          method: "POST",
-          body: { title: newDocTitle.trim(), mode: newDocMode },
-        });
-        const cdata = await cr.json();
-        if (!cdata.ok) {
-          throw new Error(cdata.error ?? "创建文档失败");
-        }
-        targetDoc = cdata.document;
-        // 立刻选中新文档 + 推进文档列表 + 弹编辑 dialog
-        setSelectedDoc(targetDoc);
-        setDocuments((prev) => [...prev, targetDoc!]);
-        setNewDocTitle("");
-        setNewDocMode("spec");
-        // 同步给 DocDetailDialog(右上角的浮窗)
-        window.dispatchEvent(
-          new CustomEvent("kanban:open-doc", { detail: { docId: targetDoc!.id } })
-        );
-        toast.success(`已创建文档「${targetDoc!.title}」,继续生成…`);
-      }
-
-      // 调 LLM —— targetDoc 此时必非空
-      // 1) 拿 apiKey(getAPIKey 是 async,必须 await)
-      const plainKey = await getAPIKey(provider as AIProvider);
-      if (!plainKey) {
-        toast.error(`没找到 ${provider} 的 API key,请先在「设置 key」里配置`);
-        return;
-      }
-      // 2) mode 必须是 "spec" | "tdd"(zod enum 校验)— 跟 doc.mode 走
-      const finalMode: "spec" | "tdd" = targetDoc!.mode === "tdd" ? "tdd" : "spec";
-      // 3) AAD(信封附加认证数据)抽成 const,首请求 + 401 重试共用,
-      //    避免 AAD 字段不一致导致后端 AES-GCM 解密失败(很坑,不报错位置不直观)
-      const aad = {
-        provider: provider as AIProvider,
-        model,
-        mode: finalMode,
-        title: targetDoc!.title,
-        prompt,
-      };
-      // 4) 信封加密(apiKey 走 AAD 绑定 mode+model+title+prompt,防 envelope 复用)
-      const enc = await wrapApiKeyWithRetry(plainKey, aad);
-      // 5) 调 LLM(走原生 fetch,不走 wsFetch,免得 workspaceId 干扰 AAD / body)
-      //    kid 失效重试放在 fetch 之后(401 响应)——
-      //    前端 wrapApiKey 是纯加密,不会抛 kid 错,得在后端 401 之后才意识到要刷新公钥
-      //    用参数注入避免闭包对 try 块内 const 引用的歧义
-      const doRequest = async (envelope: typeof enc) => {
-        const resp = await fetch("/api/ai/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            documentId: targetDoc!.id,
-            provider: provider as AIProvider,
-            model,
-            title: targetDoc!.title,
-            prompt: prompt ?? "",
-            mode: finalMode,
-            enc: envelope,
-          }),
-        });
-        return { resp, body: await resp.json() };
-      };
-      let { resp: r, body: data } = await doRequest(enc);
-      // kid 失效(后端进程重启,globalThis 清掉)→ 清前端 pubkey 缓存 + 用原 AAD 重新包 + 重发一次
-      if (r.status === 401 && String(data.error ?? "").includes("公钥已过期")) {
-        resetAIPubkeyCache();
-        const enc2 = await wrapApiKeyWithRetry(plainKey, aad);
-        ({ resp: r, body: data } = await doRequest(enc2));
-      }
-      if (data.ok) {
-        setAiGeneratedContent(data.content ?? "");
-        setAiGenerateOpen(false);
-        toast.success("已生成,可点击「应用到编辑器」");
-      } else {
-        toast.error(data.error ?? "生成失败");
-      }
-    } catch (e: any) {
-      toast.error(`生成失败: ${e?.message ?? e}`);
-    } finally {
-      setAiGenerating(false);
+  // AI 抽屉应用回调:kind="insert" 插到光标 / kind="replace" 替换全文
+  function handleAIApply(kind: "insert" | "replace", md: string) {
+    if (!editorRef.current) {
+      toast.error("编辑器还没准备好");
+      return;
+    }
+    const ok =
+      kind === "replace"
+        ? editorRef.current.replaceAllWithMarkdown(md)
+        : editorRef.current.insertMarkdownAtCursor(md);
+    if (ok) {
+      toast.success(kind === "replace" ? "已替换全文" : "已插入到光标");
+    } else {
+      toast.error("写入失败");
     }
   }
-
-  // setAIGeneratingSafe 已删除 — 直接 setAiGenerating(false) 即可
-  // 之前用 typeof window !== "undefined" 包了一层,但 React 的 setState 在 unmount 后
-  // 会自动 noop,不会报错。简化掉。
 
   function handleOpenImport() {
     if (!selectedDoc) return;
@@ -875,7 +774,7 @@ export function DocPanel() {
 
       {/* ── Editing Dialog (双栏) ── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-5xl max-h-[90vh] flex flex-col">
+        <DialogContent className="max-w-7xl max-h-[90vh] flex flex-row p-0 overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <Input
@@ -929,6 +828,20 @@ export function DocPanel() {
                   导入看板
                 </Button>
               )}
+              {/* AI 写作抽屉唤起 — 任何模式都可用(老 AIGenerateDialog 的入口替代) */}
+              {selectedDoc && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px] gap-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                  onClick={() => setAiDrawerOpen((o) => !o)}
+                  title="唤起 / 收起右侧 AI 写作抽屉"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {aiDrawerOpen ? "收起 AI" : "AI 写作"}
+                </Button>
+              )}
             </DialogTitle>
             {onlineUsers.length > 0 && (
               <div className="flex gap-2 flex-wrap mt-1">
@@ -945,7 +858,10 @@ export function DocPanel() {
             )}
           </DialogHeader>
 
+          {/* 左:主区(上 编辑器 / 下 关联任务)+ 右侧 AI 抽屉 */}
+          <div className="flex-1 min-w-0 flex flex-row overflow-hidden">
           {/* 主区:上 编辑器 / 下 关联任务 */}
+          <div className="flex-1 min-w-0 flex flex-col p-3 gap-2 overflow-hidden">
           <div className="flex-1 min-h-0 grid grid-rows-[1fr_auto] gap-2 overflow-hidden">
             {/* 上:编辑器 + spec/tdd 模式的顶部进度条 */}
             <div className="overflow-hidden relative flex flex-col gap-1.5">
@@ -974,6 +890,8 @@ export function DocPanel() {
                     onChecklistChange={setHasChecklistRows}
                     onChecklistStatsChange={setChecklistStats}
                     onJsonChange={setLiveDocJson}
+                    onAIRequest={() => setAiDrawerOpen(true)}
+                    aiGenerating={aiGenerating}
                   />
                 ) : null}
               </div>
@@ -1148,8 +1066,22 @@ export function DocPanel() {
               )}
             </div>
           </div>
+          </div>
+          {/* 右:AI 抽屉(常驻)— 编辑器 ✨ 按钮唤起,内容直接 setContent 到编辑器 */}
+          {selectedDoc && (
+            <AIDrawer
+              open={aiDrawerOpen}
+              onOpenChange={setAiDrawerOpen}
+              mode={selectedDoc.mode === "free" ? "spec" : selectedDoc.mode}
+              title={selectedDoc.title}
+              onGeneratingChange={setAiGenerating}
+              onApply={handleAIApply}
+              onRequestKeySetup={() => setAiSettingsOpen(true)}
+            />
+          )}
+          </div>
 
-          <DialogFooter className="flex items-center justify-between sm:justify-between mt-2">
+          <DialogFooter className="flex items-center justify-between sm:justify-between border-t px-4 py-2">
             <span className="text-[10px] text-muted-foreground">
               {selectedDoc?.updatedAt
                 ? `最后更新: ${new Date(selectedDoc.updatedAt).toLocaleString("zh-CN")}`
@@ -1409,123 +1341,8 @@ export function DocPanel() {
               </div>
             </div>
 
-            {/* AI 区域 — 只在 spec/tdd 模式显示 */}
-            {newDocMode !== "free" && (
-              <div className="rounded-md border border-amber-200 bg-amber-50/50 p-2.5 space-y-2">
-                {aiGeneratedContent ? (
-                  // 已生成:显示状态
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-xs text-amber-900">
-                      <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-                      <span className="font-medium">
-                        AI 已生成 {aiGeneratedContent.length} 字内容
-                      </span>
-                      <span className="text-[10px] text-amber-700/80">
-                        创建时会自动填充到编辑器
-                      </span>
-                    </div>
-                    <div className="flex gap-1 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 text-[10px]"
-                        onClick={() => {
-                          setAiGeneratedContent("");
-                          setAiGenerateOpen(true);
-                        }}
-                      >
-                        <RefreshCw className="h-3 w-3 mr-1" />
-                        重新生成
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 text-[10px] text-muted-foreground hover:text-red-600"
-                        onClick={() => {
-                          setAiGeneratedContent("");
-                        }}
-                      >
-                        不用 AI
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  // 未生成:提供入口
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-amber-900">
-                      <div className="font-medium flex items-center gap-1">
-                        <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-                        用 AI 帮你写一版骨架?
-                      </div>
-                      <div className="text-[10px] text-amber-700/80 mt-0.5">
-                        根据标题 + 你写的需求,自动产出 {DOC_MODE_LABEL[newDocMode]} 模板
-                      </div>
-                    </div>
-                    <div className="flex gap-1 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs border-amber-300"
-                        onClick={() => setAiSettingsOpen(true)}
-                      >
-                        <Key className="h-3 w-3 mr-1" />
-                        设置 key
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs bg-amber-500 hover:bg-amber-600"
-                        disabled={aiGenerating}
-                        onClick={async () => {
-                          // 标题驱动:填了标题就直接生成,prompt 为空,完全靠标题推断
-                          // 没填标题:打开高级 dialog 让用户写需求
-                          if (!newDocTitle.trim()) {
-                            toast.error("请先填标题");
-                            return;
-                          }
-                          // 没配任何 key → 引导去设置
-                          if (!hasAPIKey("minimax") && !hasAPIKey("deepseek")) {
-                            setAiSettingsOpen(true);
-                            toast.info("请先配置 API key");
-                            return;
-                          }
-                          // 走一键生成(标题驱动),生成完填到 aiGeneratedContent
-                          await handleQuickGenerate(newDocTitle || "");
-                        }}
-                      >
-                        {aiGenerating ? (
-                          <>
-                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                            生成中…
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-3 w-3 mr-1" />
-                            AI 生成
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 text-[10px] text-amber-700 hover:text-amber-900"
-                        onClick={() => {
-                          // 高级模式:打开 prompt dialog 让用户写详细需求
-                          if (!hasAPIKey("minimax") && !hasAPIKey("deepseek")) {
-                            setAiSettingsOpen(true);
-                            toast.info("请先配置 API key");
-                            return;
-                          }
-                          setAiGenerateOpen(true);
-                        }}
-                        title="打开高级模式:可写详细需求、选模型"
-                      >
-                        高级
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* AI 区域 — 老 AIGenerateDialog 黄底块已删。
+                AI 写作入口改到编辑器的 ✨ 按钮(右侧抽屉),不在新建阶段提示 */}
           </div>
 
           <DialogFooter className="gap-2">
@@ -1562,22 +1379,6 @@ export function DocPanel() {
         open={aiSettingsOpen}
         onOpenChange={setAiSettingsOpen}
         onConfigured={() => setAiKeysTick((t) => t + 1)}
-      />
-
-      {/* ── AI 生成 dialog(高级模式)— 只收集参数,真生成由 DocPanel 处理 ── */}
-      <AIGenerateDialog
-        open={aiGenerateOpen}
-        onOpenChange={setAiGenerateOpen}
-        mode={newDocMode}
-        title={newDocTitle}
-        generating={aiGenerating}
-        onAdvancedGenerate={(provider, model, prompt) =>
-          handleAdvancedGenerate(provider, model, prompt)
-        }
-        onRequestKeySetup={() => {
-          setAiGenerateOpen(false);
-          setAiSettingsOpen(true);
-        }}
       />
 
       {/* ── 删除文档确认 dialog(替代 window.confirm) ── */}

@@ -153,6 +153,16 @@ export async function POST(req: NextRequest) {
     ? `标题:${title}\n\n额外需求/背景:\n${prompt.trim()}\n\n请按上述结构输出完整 ${mode.toUpperCase()} 文档:`
     : `标题:${title}\n\n请按上述结构输出完整 ${mode.toUpperCase()} 文档:`
 
+  // 阶段 4:流式 — LLM 端 stream=true,后端转发 SSE
+  //
+  // 协议:前端拿 text/event-stream,每条 "data: {json}\n\n"
+  //   - {token: "..."}  表示增量 token(累加)
+  //   - {error: "..."}  表示中途出错
+  //   - {done: true, content: "..."}  表示结束(content 是完整文本,前端可核对)
+  //   - 末尾 "data: [DONE]\n\n"  表示 SSE 链路结束
+  //
+  // 优势:前端能 token-by-token 渲染预览(打字机效果)+ 中断;不像一次性那样用户干等 30s
+  // 中断:走 ReadableStream.cancel() — 一旦前端 AbortController.abort() 触发,这里 stream 会 reject
   let resp: Response;
   try {
     resp = await fetch(cfg.endpoint, {
@@ -169,11 +179,9 @@ export async function POST(req: NextRequest) {
         ],
         temperature: 0.7,
         max_tokens: 2048,
-        // 关闭流式 — 我们一次性拿完整内容,避免前端处理流
-        stream: false,
+        stream: true,
       }),
-      // 加超时保护(Next.js 本身不直接支持,这里用 AbortController 兜底)
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
   } catch (e: any) {
     return NextResponse.json(
@@ -182,7 +190,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!resp.ok) {
+  if (!resp.ok || !resp.body) {
     const errText = await resp.text().catch(() => "");
     return NextResponse.json(
       {
@@ -193,20 +201,104 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const data = await resp.json();
-  // 兼容 OpenAI 格式的 choices[0].message.content
-  const content: string | undefined = data?.choices?.[0]?.message?.content;
-  if (!content) {
-    return NextResponse.json(
-      { ok: false, error: "模型未返回内容" },
-      { status: 502 }
-    );
-  }
+  // OpenAI 风格 SSE:每行 "data: {json}",choices[0].delta.content 是增量 token
+  // data: [DONE] 表示结束
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const reader = resp.body!.getReader();
+      let buffer = "";
+      let acc = "";
+      // 60s 无活动视为超时(LLM 慢的时候给点余量)
+      const idleTimer = setTimeout(() => {
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ error: "上游 LLM 无响应(60s 超时)" })}\n\n`)
+          );
+          controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+          controller.close();
+          reader.cancel().catch(() => {});
+        } catch {
+          /* controller already closed */
+        }
+      }, 60_000);
 
-  return NextResponse.json({
-    ok: true,
-    content: content.trim(),
-    model: useModel,
-    provider,
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // 按 \n 切,保留最后一段到 buffer(可能不完整)
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") {
+              // 收尾 — 发 done 事件给前端
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ done: true, content: acc })}\n\n`
+                )
+              );
+              controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+              clearTimeout(idleTimer);
+              controller.close();
+              return;
+            }
+            try {
+              const j = JSON.parse(payload);
+              const delta: string | undefined =
+                j?.choices?.[0]?.delta?.content ??
+                j?.choices?.[0]?.message?.content; // 兼容非流式字段(偶尔)
+              if (delta) {
+                acc += delta;
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ token: delta })}\n\n`)
+                );
+              }
+            } catch {
+              // 非 JSON,忽略
+            }
+          }
+        }
+        // 正常流走完但没收到 [DONE](理论上不会)
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ done: true, content: acc })}\n\n`
+          )
+        );
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+        clearTimeout(idleTimer);
+        controller.close();
+      } catch (e: any) {
+        clearTimeout(idleTimer);
+        // 流中断(可能是前端 abort)— 发个 error 事件再 close
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ error: `流中断:${e?.message ?? e}` })}\n\n`
+            )
+          );
+          controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+          controller.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no", // 告诉 nginx 别缓冲
+    },
   });
 }

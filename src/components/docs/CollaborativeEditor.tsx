@@ -20,6 +20,7 @@ import { getSocketInstance } from "@/hooks/useSocket";
 import { getYDoc, getAwareness, connectCollaboration } from "@/lib/collaboration";
 import { CustomCursorPlugin } from "@/lib/tiptap-cursor-plugin";
 import { TaskList, TaskItem } from "@/lib/tiptap-task-list";
+import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { EditorToolbar } from "./EditorToolbar";
 import { Button } from "@/components/ui/button";
 import type { Awareness } from "y-protocols/awareness";
@@ -38,6 +39,10 @@ interface Props {
   onChecklistStatsChange?: (stats: { total: number; checked: number }) => void;
   /** 文档 Tiptap JSON 变化时回调 — 给待审面板做实时 detect */
   onJsonChange?: (docJson: TiptapNode) => void;
+  /** 唤起 AI 抽屉的回调(让父组件打开右侧抽屉) */
+  onAIRequest?: () => void;
+  /** AI 是否在生成中 — 用来 disable ✨ 按钮 + 显示 loading */
+  aiGenerating?: boolean;
 }
 
 /** 暴露给父组件的命令式 API(DocPanel 用) */
@@ -46,10 +51,22 @@ export interface CollaborativeEditorHandle {
   insertChecklistRow: () => boolean;
   /** 在光标位置插入文本(用于 AI 生成内容等场景) */
   insertContent: (text: string) => boolean;
+  /**
+   * 在光标位置插入 markdown 文本(用于 AI 生成内容等场景)
+   * 走 marked → Tiptap JSON 转换,保留 # / ** / - [ ] 等格式
+   * @returns 成功插入返回 true
+   */
+  insertMarkdownAtCursor: (md: string) => boolean;
   /** 是否有 checklist 行(空状态判断用) */
   hasChecklist: () => boolean;
   /** 替换整个文档内容(AI 接管场景) */
   setContent: (text: string) => boolean;
+  /**
+   * 用 markdown 替换整个文档内容(AI 接管场景)
+   * 走 marked → Tiptap JSON 转换
+   * @returns 成功替换返回 true
+   */
+  replaceAllWithMarkdown: (md: string) => boolean;
   /**
    * 在 doc 里找一个 codeBlock 节点(按 sourceHash 在 JSON 树里匹配,不太精确但够用),
    * 给它打上 data-converted attr,这样下次 detectSpecCandidates 不会重复提
@@ -345,6 +362,8 @@ export const CollaborativeEditor = forwardRef<
   onChecklistChange,
   onChecklistStatsChange,
   onJsonChange,
+  onAIRequest,
+  aiGenerating,
 }, ref) {
   const savedRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -607,6 +626,12 @@ export const CollaborativeEditor = forwardRef<
         editor.commands.focus("end");
         return editor.chain().insertContent(text).focus().run();
       },
+      insertMarkdownAtCursor: (md: string) => {
+        if (!editor) return false;
+        // 保持光标在原位(不强制跳到末尾)
+        const json = markdownToTiptap(md);
+        return editor.chain().insertContent(json as any).run();
+      },
       hasChecklist: () => {
         if (!editor) return false;
         // 用 ProseMirror 状态查 taskList 节点
@@ -631,6 +656,11 @@ export const CollaborativeEditor = forwardRef<
           /* not JSON, fall through */
         }
         return editor.commands.setContent(textToTiptapJSON(text));
+      },
+      replaceAllWithMarkdown: (md: string) => {
+        if (!editor) return false;
+        const json = markdownToTiptap(md);
+        return editor.commands.setContent(json as any, { emitUpdate: true });
       },
       markCodeBlockConverted: (sourceHash: string, entityId: string) => {
         if (!editor) return false;
@@ -735,7 +765,7 @@ export const CollaborativeEditor = forwardRef<
   return (
     <div className="flex flex-col h-full" data-doc-panel-root>
       <div className="flex-1 overflow-auto border rounded-md flex flex-col">
-        <EditorToolbar editor={editor} />
+        <EditorToolbar editor={editor} onAIRequest={onAIRequest} aiGenerating={aiGenerating} />
         <EditorContent editor={editor} className="w-full flex-1 p-3" />
       </div>
       <div className="flex justify-end pt-2">

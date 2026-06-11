@@ -17,11 +17,16 @@ import {
   Undo2,
   Redo2,
   ListChecks,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/util";
 
 interface Props {
   editor: Editor | null;
+  /** 唤起 AI 抽屉(DocPanel 传入) */
+  onAIRequest?: () => void;
+  /** AI 是否在生成中(disabled ✨ 按钮 + 替换为 loader) */
+  aiGenerating?: boolean;
 }
 
 type Level = 1 | 2 | 3;
@@ -142,7 +147,7 @@ function ToolbarDivider() {
   return <div className="w-px h-5 bg-gray-200 mx-0.5 shrink-0" />;
 }
 
-export function EditorToolbar({ editor }: Props) {
+export function EditorToolbar({ editor, onAIRequest, aiGenerating }: Props) {
   if (!editor) return null;
 
   return (
@@ -188,8 +193,30 @@ export function EditorToolbar({ editor }: Props) {
         <ToolbarBtn key={btn.label} btn={btn} editor={editor} />
       ))}
 
-      <span className="ml-auto text-[10px] text-gray-400 hidden sm:inline">
-        Markdown 快捷输入: #标题, **加粗**, *斜体*
+      {/* AI 入口 — 放在最右,margin-left auto 让它贴右 */}
+      {onAIRequest && (
+        <>
+          <span className="ml-auto" />
+          <button
+            type="button"
+            title={aiGenerating ? "AI 生成中…" : "AI 帮你写"}
+            onClick={onAIRequest}
+            disabled={aiGenerating}
+            className={cn(
+              "flex items-center gap-1 px-2 h-7 rounded text-xs font-medium transition-colors",
+              aiGenerating
+                ? "bg-amber-100 text-amber-700 cursor-wait"
+                : "bg-gradient-to-r from-amber-400 to-orange-500 text-white hover:from-amber-500 hover:to-orange-600 shadow-sm"
+            )}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {aiGenerating ? "生成中" : "AI 写"}
+          </button>
+        </>
+      )}
+
+      <span className="text-[10px] text-gray-400 hidden md:inline ml-2">
+        Markdown: #标题, **加粗**, *斜体*
       </span>
     </div>
   );
