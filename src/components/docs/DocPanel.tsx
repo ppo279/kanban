@@ -45,11 +45,11 @@ import type { TiptapNode } from "@/lib/specDetector";
 import {
   hasAPIKey,
   getAPIKey,
-  wrapApiKey,
+  wrapApiKeyWithRetry,
   resetAIPubkeyCache,
   type AIProvider,
 } from "@/lib/ai-keys";
-import { resolveModel } from "@/lib/aiProviders";
+import { resolveModel, AI_PROVIDER_CONFIG } from "@/lib/aiProviders";
 import {
   DOC_MODES,
   DOC_MODE_LABEL,
@@ -435,8 +435,10 @@ export function DocPanel() {
   // ── 加载文档关联的 task 列表(关联任务面板用) ──
   async function loadLinkedTasks(documentId: string) {
     try {
-      const r = await fetch(`/api/document-tasks?docId=${documentId}`, {
-        credentials: "include",
+      // /api/document-tasks?docId= 拿关联的 task 列表
+      // docId 隐含 wsId(后端从 doc 反查),用 skipWorkspace
+      const r = await wsFetch(`/api/document-tasks?docId=${documentId}`, {
+        skipWorkspace: true,
       });
       const data = await r.json();
       if (data.ok) setLinkedTasks(data.items ?? []);
@@ -497,32 +499,15 @@ export function DocPanel() {
     if (!ok) toast.error("插入失败(文档可能没打开)");
   }
 
-  // ── AI 生成的几个 stub:本次只让 tsc 通过,真实流程后续接 ──
+  // ── 标题驱动的快速生成(没选中 doc 时也会自动创建) ──
   async function handleQuickGenerate(prompt: string) {
-    if (!selectedDoc) {
-      toast.error("请先选中一个文档");
-      return;
-    }
-    setAiGenerating(true);
-    try {
-      const r = await fetch("/api/ai/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ documentId: selectedDoc.id, prompt, mode: "quick" }),
-      });
-      const data = await r.json();
-      if (data.ok) {
-        setAiGeneratedContent(data.content ?? "");
-        toast.success("已生成,可点击「应用到编辑器」");
-      } else {
-        toast.error(data.error ?? "生成失败");
-      }
-    } catch (e: any) {
-      toast.error(`生成失败: ${e?.message ?? e}`);
-    } finally {
-      setAiGenerating(false);
-    }
+    // 1) 解析 provider/model —— 本地存了多个 provider 的话,选第一个配了 key 的
+    const providers: AIProvider[] = ["deepseek", "minimax"];
+    const provider = (providers.find((p) => hasAPIKey(p)) ?? providers[0]) as AIProvider;
+    const model = AI_PROVIDER_CONFIG[provider].defaultModel;
+
+    // 2) 复用 advanced 流程(它会处理"没 doc 自动建" + 信封加密 + mode 校验)
+    await handleAdvancedGenerate(provider, model, prompt);
   }
 
   async function handleAdvancedGenerate(
@@ -530,29 +515,78 @@ export function DocPanel() {
     model: string,
     prompt: string
   ) {
-    if (!selectedDoc) return;
     setAiGenerating(true);
     try {
+      // ── 流程:不管有没有 selectedDoc,都先确保有一个 doc ──
+      // 没选中 → 用父表单的 newDocTitle + newDocMode 先建一个
+      // 选中了 → 直接复用
+      let targetDoc = selectedDoc;
+      if (!targetDoc) {
+        if (!newDocTitle.trim()) {
+          toast.error("请先在上面填一个文档标题");
+          setAiGenerating(false);
+          return;
+        }
+        const cr = await wsFetch("/api/documents", {
+          method: "POST",
+          body: { title: newDocTitle.trim(), mode: newDocMode },
+        });
+        const cdata = await cr.json();
+        if (!cdata.ok) {
+          throw new Error(cdata.error ?? "创建文档失败");
+        }
+        targetDoc = cdata.document;
+        // 立刻选中新文档 + 推进文档列表 + 弹编辑 dialog
+        setSelectedDoc(targetDoc);
+        setDocuments((prev) => [...prev, targetDoc!]);
+        setNewDocTitle("");
+        setNewDocMode("spec");
+        // 同步给 DocDetailDialog(右上角的浮窗)
+        window.dispatchEvent(
+          new CustomEvent("kanban:open-doc", { detail: { docId: targetDoc!.id } })
+        );
+        toast.success(`已创建文档「${targetDoc!.title}」,继续生成…`);
+      }
+
+      // 调 LLM —— targetDoc 此时必非空
+      // 1) 拿 apiKey(getAPIKey 是 async,必须 await)
+      const plainKey = await getAPIKey(provider as AIProvider);
+      if (!plainKey) {
+        toast.error(`没找到 ${provider} 的 API key,请先在「设置 key」里配置`);
+        return;
+      }
+      // 2) mode 必须是 "spec" | "tdd"(zod enum 校验)— 跟 doc.mode 走
+      const finalMode: "spec" | "tdd" = targetDoc!.mode === "tdd" ? "tdd" : "spec";
+      // 3) 信封加密(apiKey 走 AAD 绑定 mode+model+title+prompt,防 envelope 复用)
+      //    plainKey 此时已确认非空,加 ! 让 tsc narrow
+      const enc = await wrapApiKeyWithRetry(plainKey, {
+        provider: provider as AIProvider,
+        model,
+        mode: finalMode,
+        title: targetDoc!.title,
+        prompt,
+      });
+      // 4) 调 LLM(走原生 fetch,不走 wsFetch,免得 workspaceId 干扰 AAD / body)
       const r = await fetch("/api/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          documentId: selectedDoc.id,
+          documentId: targetDoc!.id,
           provider,
           model,
           prompt,
-          mode: "advanced",
+          mode: finalMode,
+          title: targetDoc!.title,
+          enc,
         }),
       });
       const data = await r.json();
       if (data.ok) {
         setAiGeneratedContent(data.content ?? "");
-        // 成功路径关 dialog — 注释之前说"成功后关",代码漏写
         setAiGenerateOpen(false);
         toast.success("已生成,可点击「应用到编辑器」");
       } else {
-        // 失败留 dialog 让用户改 prompt 重试
         toast.error(data.error ?? "生成失败");
       }
     } catch (e: any) {

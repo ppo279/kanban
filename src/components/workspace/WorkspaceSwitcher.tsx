@@ -14,7 +14,7 @@ import { useState, useRef, useEffect } from "react";
 import { ChevronDown, Plus, Settings, Check, FolderOpen, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/util";
-import { type Workspace } from "@/types";
+import { type Workspace, parseTechTag } from "@/types";
 
 interface Props {
   workspaces: Workspace[];
@@ -102,14 +102,24 @@ export function WorkspaceSwitcher({
                     <div className="font-medium truncate">{w.name}</div>
                     {w.techStack.length > 0 && (
                       <div className="flex gap-1 mt-0.5 flex-wrap">
-                        {w.techStack.slice(0, 3).map((t) => (
-                          <span
-                            key={t}
-                            className="text-[9px] px-1 rounded bg-slate-200 text-slate-600"
-                          >
-                            {t}
-                          </span>
-                        ))}
+                        {w.techStack.slice(0, 3).map((t) => {
+                          // 去掉 [F]/[B]/[T] 前缀显示干净名(老数据无前缀就原样显示)
+                          const { name } = parseTechTag(t);
+                          const kindClass =
+                            parseTechTag(t).kind === "backend"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : parseTechTag(t).kind === "tool"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-blue-100 text-blue-700";
+                          return (
+                            <span
+                              key={t}
+                              className={`text-[9px] px-1 rounded ${kindClass}`}
+                            >
+                              {name}
+                            </span>
+                          );
+                        })}
                         {w.techStack.length > 3 && (
                           <span className="text-[9px] text-muted-foreground">
                             +{w.techStack.length - 3}

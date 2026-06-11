@@ -33,7 +33,7 @@ interface Props {
   /** DocPanel 是否在生成中(用来显示 spinner + disable 按钮) */
   generating?: boolean;
   /** 委托给 DocPanel 真正去生成 + 创建 + 打开编辑 */
-  onAdvancedGenerate: (provider: AIProvider, model: string, prompt: string) => void;
+  onAdvancedGenerate: (provider: AIProvider, model: string, prompt: string, title: string) => void;
   /** 没配 key 时跳到设置 dialog */
   onRequestKeySetup: () => void;
 }
@@ -92,7 +92,7 @@ export function AIGenerateDialog({
     }
     // 委托给 DocPanel — 它负责调 LLM + 创建文档 + 打开编辑
     // dialog 不关闭,等 DocPanel 完成后再关(setAiGenerateOpen(false) 在 handleAdvancedGenerate 成功路径里调)
-    onAdvancedGenerate(provider, model, prompt.trim());
+    onAdvancedGenerate(provider, model, prompt.trim(), title.trim());
   }
 
   return (

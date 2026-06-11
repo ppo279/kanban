@@ -316,26 +316,68 @@ export interface WorkspaceDraft {
   techStack: string[];
 }
 
-/** 预置技术栈建议 — 给标签输入框做 quick add,用户可任意加新标签 */
-export const TECH_STACK_SUGGESTIONS: string[] = [
-  "Next.js",
-  "React",
-  "TypeScript",
-  "Tiptap",
-  "Yjs",
-  "Socket.IO",
-  "Drizzle",
-  "SQLite",
-  "PostgreSQL",
-  "Tailwind CSS",
-  "shadcn/ui",
-  "Zustand",
-  "Vitest",
-  "Zod",
-  "Node.js",
-  "Hono",
-  "Express",
-  "Vite",
-  "Docker",
-  "Redis",
-];
+/** 预置技术栈建议 — 按"前端/后端"分组,给标签输入框做 quick add,用户可任意加新标签 */
+export const TECH_STACK_SUGGESTIONS = {
+  frontend: [
+    "Next.js",
+    "React",
+    "Vue",
+    "TypeScript",
+    "Tailwind CSS",
+    "shadcn/ui",
+    "Vite",
+    "Zustand",
+    "Tiptap",
+    "Yjs",
+  ],
+  backend: [
+    "Node.js",
+    "Hono",
+    "Express",
+    "PostgreSQL",
+    "SQLite",
+    "Drizzle",
+    "Prisma",
+    "Redis",
+    "Socket.IO",
+    "REST",
+    "tRPC",
+    "JWT",
+  ],
+} as const;
+
+/**
+ * 标签前缀:把字符串分类到"前端 / 后端 / 通用"
+ * - 字符串以 [F] / [B] / [T] 开头
+ * - 没前缀的视为通用(渲染时归到"未分类"桶)
+ * - 用户输入时也支持手打前缀
+ */
+export const TECH_PREFIX = {
+  F: "F", // frontend
+  B: "B", // backend
+  T: "T", // tool / 通用
+} as const;
+
+export type TechKind = "frontend" | "backend" | "tool" | "unknown";
+
+/** 解析一个技术栈字符串,返回分类 + 去掉前缀的"干净名" */
+export function parseTechTag(raw: string): { kind: TechKind; name: string; display: string } {
+  const s = raw.trim();
+  // [F] xxx
+  const m = /^\[([FBT])\]\s*(.+)$/i.exec(s);
+  if (!m) {
+    return { kind: "unknown", name: s, display: s };
+  }
+  const kind: TechKind = m[1].toUpperCase() === "F" ? "frontend" : m[1].toUpperCase() === "B" ? "backend" : "tool";
+  const name = m[2].trim();
+  return { kind, name, display: `[${m[1].toUpperCase()}] ${name}` };
+}
+
+/** 给纯名字加前缀(F 默认) */
+export function makeTechTag(name: string, kind: TechKind = "frontend"): string {
+  const clean = name.trim();
+  if (!clean) return "";
+  if (/^\[[FBT]\]/i.test(clean)) return clean; // 已经有前缀
+  const prefix = kind === "backend" ? "B" : kind === "tool" ? "T" : "F";
+  return `[${prefix}] ${clean}`;
+}

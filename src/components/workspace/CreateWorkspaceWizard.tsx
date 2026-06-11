@@ -14,7 +14,7 @@
  * 关闭按钮要二次确认(已经填了的会丢)
  */
 
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
 import {
   Sparkles,
@@ -41,7 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/util";
-import { TECH_STACK_SUGGESTIONS, type Workspace } from "@/types";
+import { TECH_STACK_SUGGESTIONS, makeTechTag, parseTechTag, type TechKind, type Workspace } from "@/types";
 
 interface Props {
   open: boolean;
@@ -579,96 +579,226 @@ function Step4({
   techInput: string;
   setTechInput: (s: string) => void;
 }) {
-  const suggestions = TECH_STACK_SUGGESTIONS.filter(
-    (t) => !draft.techStack.includes(t)
-  ).slice(0, 8);
+  /**
+   * Step 4 — 技术栈(分前端 / 后端 / 通用 3 桶)
+   *
+   * 每列独立 input + 独立 state(避免"全局 input 没法分类"的问题)
+   * 父组件传入的 techInput 还兼容着(为了不破坏现有 API),但实际渲染里
+   * 我们用本地 state 接管。
+   */
+  const [techInputF, setTechInputF] = useState("");
+  const [techInputB, setTechInputB] = useState("");
+  // 同步到父组件(父组件 reset 时清空)
+  useEffect(() => {
+    if (techInput === "" && techInputF !== "") setTechInputF("");
+    if (techInput === "" && techInputB !== "") setTechInputB("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [techInput]);
 
-  function addToList(v: string): string[] {
-    const x = v.trim();
-    if (!x) return draft.techStack;
-    if (draft.techStack.includes(x)) {
+  /**
+   * 数据:扁平 string[],每条带前缀 [F]/[B]/[T] (跟 TechKind 对应)
+   *   - 选推荐时自动加前缀
+   *   - 用户手输时如果没前缀,默认 [F](前端)
+   * 渲染:3 列(前/后/通用),每列显示该分类的已选 + 还能加的推荐
+   */
+  function addToList(
+    v: string,
+    kind: TechKind = "frontend",
+    clearInput: () => void
+  ): string[] {
+    const tagged = makeTechTag(v, kind);
+    if (!tagged) return draft.techStack;
+    if (draft.techStack.includes(tagged)) {
       toast.info("已经存在了");
       return draft.techStack;
     }
-    setTechInput("");
-    return [...draft.techStack, x];
+    clearInput();
+    return [...draft.techStack, tagged];
+  }
+
+  const columns: Array<{
+    kind: Exclude<TechKind, "tool" | "unknown">;
+    title: string;
+    borderClass: string;
+    bgClass: string;
+    textClass: string;
+    presetKey: keyof typeof TECH_STACK_SUGGESTIONS;
+    /** 该列自己的 input state setter */
+    input: string;
+    setInput: (s: string) => void;
+  }> = [
+    {
+      kind: "frontend",
+      title: "前端",
+      borderClass: "border-blue-200",
+      bgClass: "bg-blue-50/50",
+      textClass: "text-blue-700",
+      presetKey: "frontend",
+      input: techInputF,
+      setInput: setTechInputF,
+    },
+    {
+      kind: "backend",
+      title: "后端",
+      borderClass: "border-emerald-200",
+      bgClass: "bg-emerald-50/50",
+      textClass: "text-emerald-700",
+      presetKey: "backend",
+      input: techInputB,
+      setInput: setTechInputB,
+    },
+  ];
+
+  // "未分类" 桶:用户手输但没打 [F]/[B]/[T] 前缀,或者打了 [T]
+  const taggedByKind: Record<TechKind, string[]> = {
+    frontend: [],
+    backend: [],
+    tool: [],
+    unknown: [],
+  };
+  for (const t of draft.techStack) {
+    const { kind } = parseTechTag(t);
+    taggedByKind[kind].push(t);
   }
 
   return (
-    <div className="space-y-2">
-      <Label className="text-xs font-medium">技术栈(可多选,任意加)</Label>
+    <div className="space-y-3">
+      <Label className="text-xs font-medium">技术栈(分前端 / 后端,任意加)</Label>
 
-      {/* 已选 */}
-      <div className="flex flex-wrap gap-1.5 min-h-[32px] rounded-md border bg-slate-50/50 p-2">
-        {draft.techStack.length === 0 ? (
-          <span className="text-[10px] text-muted-foreground italic">
-            还没选标签,从下方点或自己输
-          </span>
-        ) : (
-          draft.techStack.map((t) => (
-            <span
-              key={t}
-              className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 text-[10px] font-medium"
+      <div className="grid grid-cols-2 gap-3">
+        {columns.map((col) => {
+          const items = taggedByKind[col.kind];
+          const presets = TECH_STACK_SUGGESTIONS[col.presetKey].filter(
+            (p) => !draft.techStack.includes(makeTechTag(p, col.kind))
+          );
+          return (
+            <div
+              key={col.kind}
+              className={`rounded-md border ${col.borderClass} ${col.bgClass} p-2 space-y-1.5`}
             >
-              {t}
-              <button
-                type="button"
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    techStack: draft.techStack.filter((x) => x !== t),
-                  })
-                }
-                className="ml-0.5 hover:text-rose-600"
+              <div className={`text-[11px] font-semibold ${col.textClass}`}>
+                {col.title}{" "}
+                <span className="text-[10px] font-normal text-muted-foreground">
+                  ({items.length})
+                </span>
+              </div>
+              {/* 已选 */}
+              <div className="flex flex-wrap gap-1 min-h-[28px] rounded border bg-white/60 p-1">
+                {items.length === 0 ? (
+                  <span className="text-[10px] text-muted-foreground italic self-center">
+                    还没选
+                  </span>
+                ) : (
+                  items.map((t) => (
+                    <span
+                      key={t}
+                      className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${col.textClass} ${col.bgClass} ${col.borderClass}`}
+                    >
+                      {parseTechTag(t).name}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDraft({
+                            ...draft,
+                            techStack: draft.techStack.filter((x) => x !== t),
+                          })
+                        }
+                        className="ml-0.5 hover:text-rose-600"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+              {/* 每列自己的输入框 — 在哪列输就归哪类(避开了"全局 input 没法分类"的问题) */}
+              <div className="flex gap-1">
+                <Input
+                  value={col.input}
+                  onChange={(e) => col.setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      setDraft({
+                        ...draft,
+                        techStack: addToList(col.input, col.kind, () => col.setInput("")),
+                      });
+                    }
+                  }}
+                  placeholder={`加${col.title}标签…`}
+                  className="h-7 text-xs"
+                  maxLength={100}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      techStack: addToList(col.input, col.kind, () => col.setInput("")),
+                    })
+                  }
+                  disabled={!col.input.trim()}
+                >
+                  <Plus className="h-3 w-3" />
+                </Button>
+              </div>
+              {/* 推荐 */}
+              {presets.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  {presets.slice(0, 6).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          techStack: addToList(p, col.kind, () => col.setInput("")),
+                        })
+                      }
+                      className="inline-flex items-center gap-0.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700"
+                    >
+                      <Plus className="h-2.5 w-2.5" />
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* "通用" 桶:用户手打了 [T] 前缀的(可视化,跟前后端平级) */}
+      {taggedByKind.tool.length > 0 && (
+        <div className="rounded border border-amber-200 bg-amber-50/50 p-2">
+          <div className="text-[11px] font-semibold text-amber-700 mb-1">
+            通用工具({taggedByKind.tool.length})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {taggedByKind.tool.map((t) => (
+              <span
+                key={t}
+                className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium"
               >
-                <X className="h-2.5 w-2.5" />
-              </button>
-            </span>
-          ))
-        )}
-      </div>
-
-      <div className="flex gap-1">
-        <Input
-          value={techInput}
-          onChange={(e) => setTechInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              setDraft({ ...draft, techStack: addToList(techInput) });
-            }
-          }}
-          placeholder="输入后回车添加(任意标签)"
-          className="h-7 text-xs"
-        />
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7"
-          onClick={() => setDraft({ ...draft, techStack: addToList(techInput) })}
-          disabled={!techInput.trim()}
-        >
-          <Plus className="h-3 w-3" />
-        </Button>
-      </div>
-
-      {suggestions.length > 0 && (
-        <div className="flex flex-wrap gap-1 pt-0.5">
-          <span className="text-[10px] text-muted-foreground mr-1 self-center">
-            推荐:
-          </span>
-          {suggestions.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setDraft({ ...draft, techStack: addToList(t) })}
-              className="inline-flex items-center gap-0.5 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-600 hover:border-blue-300 hover:text-blue-700"
-            >
-              <Plus className="h-2.5 w-2.5" />
-              {t}
-            </button>
-          ))}
+                {parseTechTag(t).name}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      techStack: draft.techStack.filter((x) => x !== t),
+                    })
+                  }
+                  className="ml-0.5 hover:text-rose-600"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>

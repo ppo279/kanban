@@ -28,6 +28,7 @@ import { useRouter } from "next/navigation";
 import { DocSidebar } from "@/components/docs/DocSidebar";
 import { CreateWorkspaceWizard } from "@/components/workspace/CreateWorkspaceWizard";
 import { WorkspaceSwitcher } from "@/components/workspace/WorkspaceSwitcher";
+import { EditWorkspaceDialog } from "@/components/workspace/EditWorkspaceDialog";
 import { wsFetch } from "@/lib/wsFetch";
 
 export function Board() {
@@ -82,6 +83,9 @@ export function Board() {
   const [wizardOpen, setWizardOpen] = useState(false);
   // 首次进入 + 没 ws + 已经 hydrate 过 → 强制弹向导
   const [forceWizard, setForceWizard] = useState(false);
+  // 编辑项目 dialog 状态
+  const [editWs, setEditWs] = useState<import("@/types").Workspace | null>(null);
+  const [editWsOpen, setEditWsOpen] = useState(false);
   useEffect(() => {
     if (workspacesHydrated && workspaces.length === 0) {
       setForceWizard(true);
@@ -91,6 +95,22 @@ export function Board() {
 
   async function handleCreateNew() {
     setWizardOpen(true);
+  }
+
+  function handleEditWs(id: string) {
+    const w = workspaces.find((x) => x.id === id);
+    if (!w) {
+      toast.error("项目不存在");
+      return;
+    }
+    setEditWs(w);
+    setEditWsOpen(true);
+  }
+
+  function handleWsSaved(updated: import("@/types").Workspace) {
+    // 用新数据替换 store 里的旧 ws(全列表替换 → 触发重新渲染)
+    setWorkspaces(workspaces.map((w) => (w.id === updated.id ? updated : w)));
+    toast.success(`项目「${updated.name}」已更新`);
   }
   async function handleSwitch(id: string) {
     if (id === currentWorkspaceId) return;
@@ -287,6 +307,7 @@ export function Board() {
             currentId={currentWorkspaceId}
             onSwitch={handleSwitch}
             onCreateNew={handleCreateNew}
+            onEdit={handleEditWs}
             onDelete={handleDeleteWs}
           />
           <Button
@@ -406,6 +427,12 @@ export function Board() {
           if (!o) setForceWizard(false);
         }}
         onCreated={handleWsCreated}
+      />
+      <EditWorkspaceDialog
+        open={editWsOpen}
+        onOpenChange={setEditWsOpen}
+        workspace={editWs}
+        onSaved={handleWsSaved}
       />
     </div>
   );
