@@ -557,31 +557,45 @@ export function DocPanel() {
       }
       // 2) mode 必须是 "spec" | "tdd"(zod enum 校验)— 跟 doc.mode 走
       const finalMode: "spec" | "tdd" = targetDoc!.mode === "tdd" ? "tdd" : "spec";
-      // 3) 信封加密(apiKey 走 AAD 绑定 mode+model+title+prompt,防 envelope 复用)
-      //    plainKey 此时已确认非空,加 ! 让 tsc narrow
-      const enc = await wrapApiKeyWithRetry(plainKey, {
+      // 3) AAD(信封附加认证数据)抽成 const,首请求 + 401 重试共用,
+      //    避免 AAD 字段不一致导致后端 AES-GCM 解密失败(很坑,不报错位置不直观)
+      const aad = {
         provider: provider as AIProvider,
         model,
         mode: finalMode,
         title: targetDoc!.title,
         prompt,
-      });
-      // 4) 调 LLM(走原生 fetch,不走 wsFetch,免得 workspaceId 干扰 AAD / body)
-      const r = await fetch("/api/ai/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          documentId: targetDoc!.id,
-          provider,
-          model,
-          prompt,
-          mode: finalMode,
-          title: targetDoc!.title,
-          enc,
-        }),
-      });
-      const data = await r.json();
+      };
+      // 4) 信封加密(apiKey 走 AAD 绑定 mode+model+title+prompt,防 envelope 复用)
+      const enc = await wrapApiKeyWithRetry(plainKey, aad);
+      // 5) 调 LLM(走原生 fetch,不走 wsFetch,免得 workspaceId 干扰 AAD / body)
+      //    kid 失效重试放在 fetch 之后(401 响应)——
+      //    前端 wrapApiKey 是纯加密,不会抛 kid 错,得在后端 401 之后才意识到要刷新公钥
+      //    用参数注入避免闭包对 try 块内 const 引用的歧义
+      const doRequest = async (envelope: typeof enc) => {
+        const resp = await fetch("/api/ai/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            documentId: targetDoc!.id,
+            provider: provider as AIProvider,
+            model,
+            title: targetDoc!.title,
+            prompt: prompt ?? "",
+            mode: finalMode,
+            enc: envelope,
+          }),
+        });
+        return { resp, body: await resp.json() };
+      };
+      let { resp: r, body: data } = await doRequest(enc);
+      // kid 失效(后端进程重启,globalThis 清掉)→ 清前端 pubkey 缓存 + 用原 AAD 重新包 + 重发一次
+      if (r.status === 401 && String(data.error ?? "").includes("公钥已过期")) {
+        resetAIPubkeyCache();
+        const enc2 = await wrapApiKeyWithRetry(plainKey, aad);
+        ({ resp: r, body: data } = await doRequest(enc2));
+      }
       if (data.ok) {
         setAiGeneratedContent(data.content ?? "");
         setAiGenerateOpen(false);
